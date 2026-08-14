@@ -1,9 +1,9 @@
 # PRD: Multi-Filter MA Crossover Expert Advisor (MQL5)
 
-**Version:** 1.12 (Draft)
+**Version:** 1.13 (Draft)
 **Platform:** MetaTrader 5 / MQL5
-**Status:** Draft for review — see Section 9 (Open Questions) before implementation
-**Code folder:** Autotrader/MACrossEA_1.2 (staged modular rebuild — see Section 1 note on Stage 1 scope; this document describes the full target design, of which the staged rebuild currently implements Module A step 1 + a v1.2 LTF confirmation gate (see note under Module A) + Module B + Module D's Exit_Mode toggle — see the 1.11/1.12 Version History entries)
+**Status:** Draft for review — see Section 7 (Assumptions Requiring Confirmation) before implementation
+**Code folder:** Autotrader/MACrossEA_1.3 (forked from Autotrader/MACrossEA_1.2, include paths renamed `MACrossEA_1.2/` → `MACrossEA_1.3/`). Carries forward Module A step 1 + the v1.2 LTF confirmation gate (see note under Module A) + Module B + Module D's Exit_Mode toggle, and adds **Module E** in `Include/MACrossEA_1.3/ExitEngine.mqh`, `SwingStructure.mqh`, and `BarSource.mqh`, with tests in `Scripts/TestExitEngine.mq5`. Modules A's angle/separation checks and Module C remain unbuilt, as in 1.2.
 
 ## 1. Overview
 
@@ -12,6 +12,8 @@ This EA generates trade signals from a fast/slow moving average (MA) crossover o
 - Trend-quality confirmation on the LTF crossover itself (directional consistency + slope/angle + minimum MA separation).
 - A higher-timeframe ("HTF") MA trend filter that restricts trade direction.
 - A single, mutually-exclusive momentum/oscillator filter (radio-button style), plus an independent ATR volatility filter, both evaluated on the LTF (the same timeframe as the crossover signal) that can veto a trade for exhaustion of the specific move being entered.
+
+Once a position is open it is managed by two independent mechanisms: Module D's Exit_Mode (fixed SL/TP or trailing stop), and — new in v1.13 — Module E, which monitors the LTF swing structure that justified the trade and exits when that structure fails. Module E is deliberately *not* the inverse of the entry condition; see its Design principle note.
 
 The EA does not trade on tick-by-tick noise — all signal evaluation happens on closed candles only (consistent with the Bollinger Band EA's processing model), to avoid repainting and intrabar false signals.
 
@@ -36,6 +38,7 @@ This lets a tester run "crossover + HTF only" as a baseline, then re-enable one 
 - Single-select momentum filter + independent ATR volatility filter
 - AUTO (auto-execute) and SIGNAL_ONLY (alert-only) modes
 - Order management: fixed SL/TP or trailing stop (selectable), position caps per direction, magic number, netting/hedging-aware execution
+- Structural trade management: monitoring an open position against the LTF swing structure that justified it, and exiting when that structure fails (Module E, added v1.13)
 
 **Out of scope (future PRD revisions):**
 
@@ -52,6 +55,9 @@ This lets a tester run "crossover + HTF only" as a baseline, then re-enable one 
 | Cross bar | The first fully closed bar on which the fast MA has crossed the slow MA |
 | Trend confirmation window | The last N MA values used to verify the MA is monotonically moving in the cross direction |
 | Regression window | The last M closed MA values used to fit a linear regression line for slope/angle measurement |
+| Swing pivot | A confirmed local low/high with `Exit_PivotStrength` bars on each side satisfying the normative comparison in Module E. Never revised once confirmed |
+| Confirmation bar | The bar exactly `Exit_PivotStrength` bars newer than a pivot bar — the bar at which that pivot first becomes knowable (Module E) |
+| Anchor | The swing low (LONG) / swing high (SHORT) a position is currently defending. Ratchets in the favorable direction only (Module E) |
 
 ## 4. Functional Modules
 
@@ -72,8 +78,9 @@ All signal calculations (Modules A, B, C) use shift ≥ 1 only. No module ever r
 - **Module B (HTF), MA-value confirmation:** uses the most recently completed HTF candle at the moment the LTF signal bar closes — this is HTF shift 1, never HTF shift 0, even if the HTF candle has been forming for a long time relative to the LTF. `HTF_TrendConfirm_Bars = 5` means `HTF_MA[5] < HTF_MA[4] < HTF_MA[3] < HTF_MA[2] < HTF_MA[1]` (uptrend case).
 - **Module B (HTF), candle-color confirmation (v1.10):** the one shift-0 exception — `HTF_ConfirmationCandles = 3` means HTF shift 0, 1, and 2 must all share the trend's candle color, re-read fresh (including the still-live shift 0 candle) every time Module B runs.
 - **Module C (LTF momentum/ATR):** evaluated on the same LTF signal bar as Module A (shift 1) — never on the live/current value. This is a hard rule: Module C must not evaluate a different bar than Module A, or the closed-bar guarantee is broken.
+- **Module E (LTF structural exit, v1.13):** evaluated on that same newly-closed LTF signal bar (shift 1), once per bar, and **before** Modules A–C, so an open position is always managed on the current bar's information before a new signal on that bar is considered. Swing pivots are scanned from shift `Exit_PivotStrength + 1` and older, which guarantees both sides of every confirmed pivot are closed bars — Module E never reads shift 0, with no exception. Its HTF backstop reads HTF shift 1 and older for **both** confirmations, deliberately excluding the shift-0 developing candle that Module B's candle check includes (see Module E for why the exception does not transfer to exits). All Module E state that must survive new bars or a restart is keyed by **bar open time**, never by shift, and every time→shift conversion uses `iBarShift(..., exact = true)`.
 
-One synchronization rule ties all three together: every signal evaluation cycle is anchored to one specific newly-closed LTF candle (shift 1). Modules A and C both read that exact candle's closed values. Module B reads whichever HTF candle was most recently completed as of that same moment (HTF shift 1). This single rule resolves the indexing ambiguity across every module rather than defining it separately per indicator.
+One synchronization rule ties all three together: every signal evaluation cycle is anchored to one specific newly-closed LTF candle (shift 1). Modules A and C both read that exact candle's closed values. Module B reads whichever HTF candle was most recently completed as of that same moment (HTF shift 1). Module E evaluates on that same candle, ahead of A–C. This single rule resolves the indexing ambiguity across every module rather than defining it separately per indicator.
 
 ### Module A — LTF Crossover Signal
 
@@ -287,9 +294,241 @@ If all three hold, the pipeline reaches `STRATEGY_SIGNAL_GENERATED`: the strateg
 - **SIGNAL_ONLY:** logs/alerts on `STRATEGY_SIGNAL_GENERATED` unconditionally, i.e. purely from Stage 1. It additionally evaluates Stage 2's position-count check (step 4) for informational purposes only — if execution would currently be blocked, it logs `EXECUTION_WOULD_BE_BLOCKED` alongside the signal, but this never suppresses the signal log itself. SIGNAL_ONLY never evaluates order validation (step 5) and never submits, modifies, closes, or reverses anything, and never runs the trailing-stop logic — this applies even if a position happens to exist on the account from manual trading or a prior AUTO-mode run.
 - **AUTO:** requires both stages — Stage 1, then Stage 2 including order validation — to pass before submitting an order.
 
+### Module E — LTF Structural Trade Exit (new in v1.13)
+
+**Purpose.** Modules A–C decide whether to *open* a trade; Module E decides whether the LTF trend that justified an already-open trade has **failed**. It is deliberately not the inverse of the entry condition: requiring the entry evidence to reverse would exit at the opposite crossover, which is the same lag the crossover already suffers on entry. Instead, Module E monitors the one thing that defines a trend independently of any indicator — the swing sequence — and exits when it breaks.
+
+For a LONG, the trade premise is a sequence of higher lows. The premise has failed when price closes below the latest *meaningful* higher low. For a SHORT, mirrored: closes above the latest meaningful lower high. That single test is the entire primary mechanism.
+
+**Design principle (read before adding anything to this module):** every additional exit trigger is a second way to leave a trade, and two exit mechanisms cannot be tuned independently from the same backtest — a trade exited by one is invisible to the other. Module E therefore has exactly one primary trigger and one backstop. Anything else under "Deliberately excluded" below is logged as a diagnostic counter so its value can be *measured* before it is ever given authority to close a position.
+
+**Inputs:**
+
+| Input | Type | Default | Description |
+|---|---|---|---|
+| Enable_StructuralExit (code: `InpEnableStructuralExit`) | bool | true | Master toggle, same isolation philosophy as Module A's v1.9 debug toggles. When false, Module E does not evaluate at all and positions are managed solely by Exit_Mode. |
+| Exit_PivotStrength (code: `InpExitPivotStrength`) | int | 2 | Bars required on each side of a swing pivot for it to be *confirmed*. Higher = fewer, more significant pivots and a later-recognized anchor; lower = more responsive and noisier. |
+| Exit_MinSwingATR (code: `InpExitMinSwingATR`) | double | 0.5 | Significance threshold, in ATR multiples, used in two places: (a) a newly confirmed swing only replaces the current anchor if it is at least this far beyond it, and (b) the initial anchor must be at least this far from the entry price. This is the parameter that prevents a trivial pullback pivot from becoming the defended level. Must be ≥ `Exit_StructureBufferATR` — see Section 5 validation. |
+| Exit_StructureBufferATR (code: `InpExitStructureBufferATR`) | double | 0.2 | Noise buffer on the break test: the close must exceed the anchor by this multiple of ATR before the break counts. Makes "broken" volatility-adaptive rather than a fixed point distance. |
+| Exit_ScanBars (code: `InpExitScanBars`) | int | 100 | Size of the initial-anchor search window, measured **backwards from the entry bar** — see the scan-window definition below. Not measured from the current bar. |
+| Exit_ATR_Period (code: `InpExitATRPeriod`) | int | 14 | ATR period used for both thresholds. **Deliberately independent** of Module A's `LTF_ATR_Period` and Module C's `ATR_Period` — the same reasoning already applied between those two. No validation enforces a relationship between them. |
+
+#### Pivot definition (normative — this is the definition for the whole codebase)
+
+Prior revisions left "confirmed swing" as an open implementation point. It is defined here exactly once. With `S = Exit_PivotStrength`, a **swing low at shift i** requires:
+
+```
+Low[i] <  Low[i-k]   for all k = 1..S      (newer side — strict)
+Low[i] <= Low[i+k]   for all k = 1..S      (older side — non-strict)
+```
+
+A **swing high at shift i** is the mirror (`High[i] > High[i-k]`, `High[i] >= High[i+k]`).
+
+Three consequences, all intentional:
+
+- **Ties resolve to the newest bar.** Given adjacent bars with equal lows, only the newer satisfies the strict-newer-side test, so a flat plateau produces exactly one pivot, never zero and never two.
+- **A pivot is only knowable `S` bars after it formed.** Because exactly one bar reaches shift `S+1` per new bar, **at most one swing low — and, separately, at most one swing high — confirms per bar.** A single outside bar can be both a swing high and a swing low; that is legal and harmless, since Module E only ever scans one side per position direction.
+- **A confirmed pivot never changes.** Once recognized it cannot be revised by later bars, so the anchor cannot repaint.
+
+**Implementation contract.** The predicate is exposed as `IsConfirmedSwingLow(pivotShift, S)` / `IsConfirmedSwingHigh(pivotShift, S)` and each **enforces `pivotShift ≥ S+1` internally**, returning false otherwise. Callers must not be the only guard against an out-of-range shift.
+
+**Series access is abstracted (`BarSource.mqh`).** Module E reads price and ATR through a `CBarSource` rather than calling `iHigh`/`iLow`/`iATR` directly: `CLiveBarSource` for the terminal, `CArrayBarSource` for synthetic history. This is not decoration — Section 6 item 11 makes "continuous evaluation ≡ batch/replay evaluation" the module's primary regression guard, and that test cannot be written at all against direct series calls, because there is no way to feed the engine a controlled sequence or rewind it. `CArrayBarSource` exposes an origin cursor that hides everything newer than a chosen bar, which is what makes both replay orders expressible against one fixed history. Test harnesses must place the just-closed bar at **shift 1** (shift 0 standing in for the forming bar), matching Section 4.0 — an off-by-one here makes every test agree with itself and disagree with production.
+
+**Single canonical implementation (requirement, not a preference).** The two predicates and the pivot collector live in exactly one place — `Include/MACrossEA_1.3/SwingStructure.mqh`, holding no indicator handles and no state — and both `ExitEngine.mqh` and `ReversalDetector.mqh` call it. No second implementation of the pivot algorithm may exist anywhere in the codebase. `ReversalDetector.mqh` (carried over from the 1.2 folder) currently uses strict comparison on **both** sides, which is a **behavioral** divergence from the definition above, not a documentation one; it must be refactored onto the shared predicate as part of this revision. Because that module is not yet wired into the running EA, the refactor carries no runtime risk at the time it is made. Both callers are covered by the same pivot unit tests (Section 6).
+
+#### Confirmation bar and anchor ATR (normative)
+
+A pivot at shift `p` in the current frame has its **confirmation bar at shift `p − S`** — the bar `S` positions newer than the pivot bar. At the instant of confirmation the pivot sits at shift `S+1`, so its confirmation bar is shift 1, the just-closed bar. Both the pivot bar and the confirmation bar are stored as **bar open times**; shifts are recomputed from those times on each access, never cached:
+
+```
+pivotShift        = iBarShift(symbol, LTF_Timeframe, PivotBarTime, true)   // exact
+confirmationShift = pivotShift - S                                          // invariant: >= 1
+sigma_c           = ATR(Exit_ATR_Period) at confirmationShift
+```
+
+`iBarShift` is called with `exact = true` and a return of `-1` is treated as `E_DATA_NOT_READY`. With `exact = false`, a broker history revision would silently relocate a stored anchor onto a neighbouring bar, leaving the anchor's price and its bar out of agreement. `confirmationShift ≥ 1` is an invariant, not an assumption — a pivot cannot be known before its confirmation bar has closed — and implementations must assert it.
+
+**Anchor ATR — one rule, everywhere.** Every anchor carries the ATR of **its own confirmation bar** (`σ_c` above). Never `ATR[1]` at the moment of processing, and never the ATR at the time a pivot happens to be discovered. This single rule governs all three uses:
+
+1. the **significance test** when ratcheting to that candidate,
+2. the **entry-distance test** when that candidate is considered as an initial anchor,
+3. the **frozen buffer** (`AnchorATR`) used by the break test for as long as that anchor stands.
+
+Determinism follows directly: because `σ_c` depends only on the candidate and not on when it is processed, an anchor established live and the same anchor rebuilt during a replay months later carry identical values. Using `ATR[1]` in any of the three positions breaks replay invariance and restart reconstruction simultaneously.
+
+**Why the ATR is frozen rather than re-read.** If the buffer used current ATR, a violent adverse move would expand ATR — and therefore widen its own exit buffer — exactly when the buffer should hold still. Freezing also makes the exit level a fixed known number for the life of the anchor, a precondition for the Section 7 open question on SL placement. A deliberate second consequence: swing significance is judged **permanently in the volatility regime that produced the swing**. A pivot that fails the significance test does not become eligible later merely because volatility has since fallen. That is the intended reading of "was this swing meaningful," and it is what makes the test order-independent.
+
+#### Per-position state
+
+Keyed by **`PositionTicket`** — not by symbol, since a hedging account can hold several positions on one symbol and the ticket is the only stable identity across them.
+
+| Field | Set when | Purpose |
+|---|---|---|
+| `PositionTicket` | fill / adoption | state key |
+| `Direction`, `EntryTime`, `EntryPrice` | fill / adoption | `EntryTime` is the broker fill time; `EntryPrice` is `POSITION_PRICE_OPEN` |
+| `EntryBarTime` | fill / adoption | open time of the LTF bar **containing** the fill. All candidate comparisons use this, not `EntryTime` |
+| `InitialAnchor` | first successful initialization | never modified afterwards; feeds the anchor-travel diagnostic |
+| `ProtectedAnchor` | initialization, then each ratchet | the swing low (LONG) / high (SHORT) currently defended |
+| `AnchorBarTime` | initialization, then each ratchet | open time of the anchor's pivot bar |
+| `AnchorATR` | initialization, then each ratchet | `σ_c` of that anchor's confirmation bar — frozen |
+| `LastExaminedPivotTime` | initialization, then each ratchet pass | newest pivot bar already tested; see the ratchet skip rule |
+| `HTFEntryBias` | fill | **diagnostic/audit only — takes no part in any exit decision.** The HTF backstop compares current bias against `Direction`, never against this field |
+| `AnchorActive` | see transitions | false until a qualifying anchor exists |
+| `ClosePending` | close submission | guards against duplicate close requests |
+
+#### Logic — once per newly closed LTF bar (signal bar, shift 1), for each EA-owned open position
+
+```
+for each EA-owned open position, by ticket:
+    if the position is no longer open:            // e.g. SL fired between bar close and evaluation
+        finalize and discard state; continue
+    htfOpposite = HTF_Confirmed_Bias is the direct opposite of Direction
+    if Module E data is not ready:
+        log E_DATA_NOT_READY
+        if htfOpposite: Close(E_HTF_CONFIRMED_OPPOSITE)
+        continue                                   // anchor untouched; no init, no ratchet, no break test
+    if not AnchorActive: Initialize()               // step 1
+    if AnchorActive:     RatchetReplay()            // step 2
+    structBreak = AnchorActive and BreakTest()      // step 3
+    if   structBreak: Close(E_STRUCT_EXIT)
+    elif htfOpposite: Close(E_HTF_CONFIRMED_OPPOSITE)
+```
+
+The HTF backstop is computed first because it depends on neither ATR nor pivots and must remain available when nothing else is, but it is **attributed last**. Ordering it ahead of the structural test would let it claim exits the structural test would have produced on the same bar, corrupting the very diagnostic it is scoped around (see the backstop design note below).
+
+**1. Anchor initialization** — runs on any bar where `AnchorActive == false`, which includes the first evaluation after fill, every later bar until an anchor is found, and adoption after a restart.
+
+The search window is anchored to the **entry bar, not to the current bar**: candidate pivot shifts run from `iBarShift(EntryBarTime)` to `iBarShift(EntryBarTime) + Exit_ScanBars`, floored at `S+1`, scanned newest → oldest. Anchoring the window to the current bar instead would make a position open longer than `Exit_ScanBars` bars impossible to initialize, and would make the same position initialize differently depending on when the search ran.
+
+A candidate qualifies when **all** hold (LONG; mirrored for SHORT):
+
+- `PivotBarTime < EntryBarTime` — the bar containing the fill is excluded, since its low is formed partly after entry;
+- its **confirmation bar time ≤ `EntryBarTime`** — see the determinism note below;
+- `c.Low < EntryPrice`;
+- `EntryPrice − c.Low ≥ Exit_MinSwingATR × σ_c` — the initial anchor must be a meaningful distance from entry, the same significance idea measured against entry instead of against a prior anchor. Without it, a pivot a few ticks below the fill could become the defended level and the position would be stopped by ordinary noise. Trade-off to be aware of when tuning: on a shallow entry this pushes the anchor to an older, deeper swing, so early risk is bounded by the protective SL rather than by structure.
+
+The first candidate satisfying all four is taken. There is **no fallback rule and no already-violated test**: if the break test fires on the same bar the anchor is established, that exit is correct — the structure was already broken and the module simply had no anchor with which to see it. (An earlier draft rejected already-violated candidates and fell back to an older swing. That rule was both self-defeating — step 2 immediately re-ratcheted to the rejected candidate, since it is newer than the fallback and clears the significance test — and wrong in the only case it could fire, which is a delayed initialization after the structure had genuinely failed.)
+
+On success set `ProtectedAnchor`, `AnchorBarTime`, `AnchorATR = σ_c`, `InitialAnchor`, `LastExaminedPivotTime = AnchorBarTime`, `AnchorActive = true`, and log `STRUCT_ANCHOR_SET`. If no candidate qualifies, log `E_NO_ANCHOR` and leave `AnchorActive = false`.
+
+**Determinism note — why confirmation must precede the entry bar.** "The most recent confirmed pivot" is otherwise time-dependent: a pivot formed before entry whose confirmation bar falls *after* the first evaluation is invisible at that first bar and visible fifty bars later. Continuous operation would take the older pivot and then subject the newer one to the ratchet's significance test; a late initialization would take the newer one directly and skip that test — two different anchors from identical inputs. Restricting initialization to candidates confirmed by `EntryBarTime` makes the initial anchor a pure function of (price history, entry), and routes everything confirming later through the ratchet, exactly as a continuous run does. With the default `S = 2` this still admits pivots up to two bars before the entry bar; anything later was equally invisible to a continuous run, so nothing is lost.
+
+**2. Ratchet — chronological replay.** Process **every** confirmed pivot newer than `LastExaminedPivotTime`, in **chronological (oldest → newest)** order, each tested against the anchor as updated by its predecessors:
+
+```
+candidates = confirmed swing lows (LONG) with BarTime > LastExaminedPivotTime,
+             ordered oldest -> newest, spanning LastExaminedPivotTime .. current bar
+for each candidate c:
+    sigma_c = ATR(Exit_ATR_Period) at shift (iBarShift(c.BarTime) - S)
+    if c.Low >= ProtectedAnchor + Exit_MinSwingATR * sigma_c:
+        ProtectedAnchor = c.Low
+        AnchorBarTime   = c.BarTime
+        AnchorATR       = sigma_c
+        log ANCHOR_RATCHETED
+    LastExaminedPivotTime = c.BarTime
+```
+
+SHORT mirrors: `c.High <= ProtectedAnchor − Exit_MinSwingATR × sigma_c`.
+
+The enumeration spans `LastExaminedPivotTime` to the current bar — it is not a fixed-width window. Advancing `LastExaminedPivotTime` past *non-qualifying* candidates is safe and does not affect replay invariance: the anchor only ever moves in the favorable direction, so the threshold only rises, and `σ_c` is fixed per candidate — a candidate that failed can never later pass. In normal operation there is at most one new candidate per bar, so this reduces to a single test; the loop only does real work after missed evaluations or on adoption.
+
+**Replay invariance is a hard requirement:** the anchor must be identical whether bars were evaluated continuously or in a batch after missed evaluations (restart, connection loss, weekend gap, tester warm-up).
+
+*Why not "the newest qualifying pivot".* Selecting newest-first and stopping at the first qualifying candidate breaks invariance. Anchor 100, threshold 1.0, two pivots pending after a gap — A = 102 (older), C = 101.5 (newer): newest-first ratchets to 101.5, while continuous evaluation would have taken A → 102 and then rejected C (which needs ≥ 103). Chronological order reproduces the continuous result; newest-first under-protects. The per-candidate ATR must likewise be read at that candidate's own confirmation bar, or a batched replay drifts from the continuous one.
+
+**3. Break test.** LONG exits when:
+
+```
+Close[1] < ProtectedAnchor − Exit_StructureBufferATR × AnchorATR
+```
+
+SHORT exits when `Close[1] > ProtectedAnchor + Exit_StructureBufferATR × AnchorATR`.
+
+#### `AnchorActive` transitions
+
+`E_NO_ANCHOR` is **not terminal**:
+
+```
+POSITION_OPEN (AnchorActive = false)
+   ├── no qualifying candidate  -> log E_NO_ANCHOR, remain POSITION_OPEN, retry next closed bar
+   └── candidate found          -> STRUCT_ANCHOR_SET, AnchorActive = true
+```
+
+While `AnchorActive` is false the position is protected solely by Exit_Mode (SL/TP or trailing) plus the HTF backstop.
+
+#### `E_DATA_NOT_READY` and `E_NO_ANCHOR` are distinct states
+
+Conflating them is how a transient data failure silently rewrites a position's protection.
+
+| | Meaning | Effect on existing anchor | Behavior |
+|---|---|---|---|
+| `E_DATA_NOT_READY` | required OHLC/ATR history or `BarsCalculated` depth unavailable, or an `iBarShift` exact lookup returned −1; the search **could not run** | **Never modified, never cleared** | Skip initialization, ratchet, and break test for this bar. Retry next closed bar. |
+| `E_NO_ANCHOR` | history sufficient, search **ran to completion**, no candidate qualified | n/a (no anchor exists) | Retry initialization next closed bar. Non-terminal. |
+
+Three consequences are normative:
+
+- **A data failure must never clear, downgrade, or re-derive a valid existing anchor.** A position that has ratcheted to a good level keeps that level through a temporary history or indicator outage.
+- **The break test is skipped entirely under `E_DATA_NOT_READY`.** An unavailable or zero ATR must never be allowed to collapse the buffer to zero and manufacture a break. This subsumes the `ATR[1] ≤ 0` guard applied elsewhere in this document.
+- **The HTF backstop still runs.** It depends on neither ATR nor pivots, so LTF data trouble must not disable it — that is exactly the circumstance in which it is the only protection left, and the case it was scoped for.
+
+#### Adoption and restart reconstruction
+
+A position with no in-memory state — adopted after a terminal restart, or opened before the EA started — is reconstructed by running initialization against `POSITION_PRICE_OPEN` / `POSITION_TIME`, then the ratchet replay across every confirmed pivot from `EntryBarTime` to the present.
+
+**Reconstruction is deterministic and reproduces the pre-restart anchor exactly, provided identical LTF OHLC history and ATR history are available across the required depth.** Pivots and confirmation-bar ATR are pure functions of that history, so no persisted state is needed. The guarantee is conditional, and the condition must be *verified* rather than assumed — broker history depth, unsynchronized history after a reconnect, and missing bars can all yield a different anchor from a partial reconstruction. Before reconstruction is attempted:
+
+```
+requiredDepth = iBarShift(symbol, LTF, EntryBarTime, true) + Exit_ScanBars + S + 1
+iBars(symbol, LTF)              >= requiredDepth
+BarsCalculated(exitATRHandle)   >= requiredDepth
+```
+
+If either check fails, or the `iBarShift` lookup returns −1, the position is in **`E_DATA_NOT_READY`**, not `E_NO_ANCHOR`; reconstruction is retried each closed bar and no anchor is accepted meanwhile. A partial reconstruction must never be accepted as a valid anchor.
+
+#### `HTF_Confirmed_Bias` — distinct from Module B's `HTF_Bias`
+
+Same two-confirmation structure (MA-monotonic over `HTF_TrendConfirm_Bars` **and** candle colour over `HTF_ConfirmationCandles`), with one difference: the candle window runs HTF shift `1..N`, **excluding the developing candle**. Module B's shift-0 exception (Section 4.0) is correct for entries — "is the developing candle currently moving with the trend" — but must not transfer to exits, because a live candle can flip and flip back within a single HTF bar and an exit acted on that value is irreversible. Entries carry no such asymmetry: a signal missed because the developing candle flipped is simply re-evaluated next bar.
+
+**`HTF_BLOCKED` does not trigger a Module E exit and does not alter structural-exit sensitivity.** Only a confirmed *direct opposite* bias triggers the backstop. Module B already uses BLOCKED to bar new entries; giving one HTF state two jobs is precisely what the excluded sensitivity tiers would have done.
+
+**Design note on the backstop's expected firing rate.** A bias flip from LONG_ONLY to SHORT_ONLY requires 5 consecutive HTF MA declines plus 3 bearish closed HTF candles — on M15/H4, roughly 20 hours of HTF deterioration, by which point the LTF structure will normally have broken many times over. The backstop is expected to be nearly silent, and that is the intent: it covers the cases where the structural exit *cannot* run (no anchor, history gap, adoption not yet reconstructable). If `E_HTF_CONFIRMED_OPPOSITE` fires regularly, the structural exit is not doing its job — that is the finding to investigate, not a reason to tune the backstop. This diagnostic only holds because attribution favours the structural test when both conditions are true on the same bar.
+
+#### Close execution, failure, and duplicate prevention
+
+- Detection and execution are distinct: **detection price is `Close[1]`**; the market order executes at the **first available tick after the bar closes**. The EA cannot transact at the historical candle close. Both prices are logged, and diagnostics (MFE/MAE/R/give-back) report against the execution price, not the detection price.
+- On trigger, if `ClosePending` is already set for that ticket, submit nothing. Otherwise submit the close and set `ClosePending`. This matters because `ManageExistingPositions()` runs every tick even though Module E evaluates once per bar, and terminal position state can lag a successful close.
+- **Success** → `CLOSE_CONFIRMED`, finalize and discard the per-ticket state.
+- **Failure** (requote, trade context busy, market closed, connection loss, broker rejection) → log `D_CLOSE_FAILED` with the exit reason that triggered it, clear `ClosePending`, **retain** the per-position state, and retry on the next eligible LTF evaluation. The retry re-tests the break condition from scratch — it is not a queued order. If price has recovered above the anchor by then, no close is sent. This is deliberate: the structure test is the authority, not the pending request.
+- **Position already gone** (SL, TP, manual close, broker action) → finalize the state, no retry, no error.
+
+#### Relationship to Exit_Mode, execution mode, and re-entry
+
+**Exit_Mode (Module D).** Module E is **orthogonal** to Exit_Mode and runs under both settings. It never modifies SL or TP — it only closes at market. Whichever mechanism triggers first wins; under FIXED_SLTP the SL/TP remain exactly as submitted, and under TRAILING_STOP the tick-based trailing continues untouched. One mechanism owning the stop level and another owning the close decision keeps their backtests separable.
+
+**SIGNAL_ONLY.** Module E evaluates and logs `EXIT_WOULD_TRIGGER` with the reason code it would have used, but never closes anything — consistent with SIGNAL_ONLY touching no positions under any circumstance.
+
+**Same-bar exit and re-entry.** Module E evaluates before Modules A–C on the same signal bar, so a position closed by Module E on bar N **may** be followed by a new position opened on bar N if Module A produces a valid fresh crossover on that bar. This is permitted and expected: the common case is an exit-long-then-open-short reversal, which under NETTING follows Module D's existing close-then-open transactional sequence (including FAIL_FLAT). Same-direction re-entry on the same bar is not blocked either, but requires a fresh crossover that the exit conditions make vanishingly unlikely.
+
+**No post-exit cooldown.** Re-entry already requires a fresh Module A crossover (shift 2 → shift 1), which cannot re-fire on the bar that just exited. An explicit cooldown would be a second, redundant suppression mechanism. Documented as a decision, not an omission.
+
+#### Deliberately excluded from this revision
+
+Each was considered and rejected for the first implementation; the first three are logged as diagnostic counters so their value can be measured rather than assumed.
+
+| Excluded | Reason |
+|---|---|
+| Fast/slow MA cross-back as a hard exit | On a chaotic LTF, a pullback deep enough to cross the MAs but too shallow to break a meaningful swing is common — it would exit trades the structural test correctly holds. Logged as `E_DIAG_MA_CROSSBACK`. |
+| Two-level structure (minor = warning, major = exit) | The same knob as `Exit_MinSwingATR` at a second resolution; the significance filter already excludes minor swings from being the anchor. Costs a second threshold whose interaction with the first cannot be tuned without substantial data. Logged as `E_DIAG_MINOR_BREAK`. |
+| HTF-neutral sensitivity tiers / trailing tightening on HTF loss | `HTF_BLOCKED` already blocks new entries via Module B; making it also alter exit behavior gives one HTF state two jobs. Logged as `E_DIAG_HTF_NEUTRAL`. |
+| `Exit_MinBarsInTrade` grace period | Time-based suppression with no structural meaning; blocks a genuine immediate reversal. Superseded by the entry-distance requirement in initialization. |
+| LTF monotonicity loss / opposite-candle-count exits | Both fire on ordinary pullbacks — the noise this module exists to ignore. |
+| Runtime "exit level must not loosen" invariant | Provably unnecessary; guaranteed by the `Exit_MinSwingATR ≥ Exit_StructureBufferATR` validation (Section 5). |
+| Already-violated rejection / fallback to an older initial anchor | Self-defeating (the ratchet re-selected the rejected candidate on the same bar) and wrong in the only case it could fire. See initialization above. |
+| Partial closes / scale-outs | Out of scope per Section 2 — positions are always closed in full. |
+
 ## 5. Non-Functional Requirements
 
-- Signal generation vs. position management are architecturally separate: Modules A–C (signal generation) are strictly closed-bar only — no intrabar recalculation, evaluated once per newly-closed LTF candle (see dedup rule below). Module D's position management (trailing stop, in particular) is tick-based and reacts every OnTick().
+- Signal generation vs. position management are architecturally separate: Modules A–C (signal generation) are strictly closed-bar only — no intrabar recalculation, evaluated once per newly-closed LTF candle (see dedup rule below). Module D's position management (trailing stop, in particular) is tick-based and reacts every OnTick(). Module E (structural exit) is closed-bar only like A–C, despite being position management: its decision is defined on `Close[1]`, and re-evaluating it intrabar would reintroduce exactly the noise sensitivity the module exists to avoid.
 - **Signal de-duplication:** a signal evaluation cycle (Modules A→B→C→D) executes exactly once per newly-closed LTF candle. Implementation should track `lastProcessedBarTime` (or equivalent) and skip evaluation entirely if the current candle's open time matches the last processed one, regardless of how many ticks arrive.
 - Indicator handles (iMA, iRSI, iMACD, iStochastic, iCCI, iATR) used via standard MT5 API rather than manual buffer math.
 - **Data readiness:** if any required indicator buffer doesn't yet have enough bars, the EA must not generate a signal and must log `DATA_NOT_READY`. Compute one centralized required-bars figure at OnInit():
@@ -300,6 +539,8 @@ If all three hold, the pipeline reaches `STRATEGY_SIGNAL_GENERATED`: the strateg
                   + safety margin (e.g. +5 bars)
   ```
   for the LTF, and the equivalent for HTF (HTF_MA_Period, HTF_TrendConfirm_Bars). Refuse to evaluate signals until history covers this figure.
+
+  **Module E terms (v1.13):** `RequiredBars` additionally takes `Exit_ScanBars + Exit_PivotStrength + 1` and `Exit_ATR_Period` into the same `max()`. The `+ Exit_PivotStrength + 1` is not padding: `Exit_ScanBars` is the size of the initial-anchor search window, and a pivot at its far edge compares against bars a further `S` older, so that is the true depth. The deepest ATR read is the oldest candidate's confirmation bar, `S` bars *newer* than the oldest pivot examined, so it is strictly inside the OHLC requirement and adds nothing. `BarsCalculated()` on the Module E ATR handle must cover the same figure. For an **adopted** position the requirement is measured from the entry bar instead of from the current bar — `iBarShift(EntryBarTime, exact) + Exit_ScanBars + S + 1` — and failing it yields `E_DATA_NOT_READY`, never `E_NO_ANCHOR` (see Module E).
 - **Parameter validation at OnInit():** the EA must validate inputs and fail initialization (`INIT_PARAMETERS_INCORRECT`) on invalid combinations, at minimum:
   - FastMA_Period > 0, SlowMA_Period > FastMA_Period
   - TrendConfirm_Bars ≥ 2 (only enforced when `Enable_TrendConfirm_Check = true`), Regression_Bars ≥ 2 (only enforced when `Enable_Angle_Check = true`) — intentionally independent of each other; no relationship between them is enforced
@@ -318,10 +559,17 @@ If all three hold, the pipeline reaches `STRATEGY_SIGNAL_GENERATED`: the strateg
   - MaxSpread_Points > 0, MaxDeviation_Points ≥ 0
   - Max_Open_Positions ≥ 1
   - Magic_Number ≥ 0
+  - **Module E (v1.13), all enforced only when `Enable_StructuralExit = true`**, matching the v1.9 conditional-validation pattern:
+    - Exit_PivotStrength ≥ 1
+    - Exit_MinSwingATR ≥ 0, Exit_StructureBufferATR ≥ 0 (zero is legal on both and means "no significance requirement" / "no buffer" — useful for isolation testing)
+    - **Exit_MinSwingATR ≥ Exit_StructureBufferATR — hard rejection.** This single rule guarantees the effective exit level can never loosen across a ratchet, so no runtime check is needed. With `m = Exit_MinSwingATR`, `b = Exit_StructureBufferATR`, and `σ` the ATR frozen at the ratchet: the ratchet requires `A_new ≥ A_old + m·σ` and sets `AnchorATR = σ`, so `E_new = A_new − b·σ ≥ A_old + (m−b)·σ ≥ A_old ≥ A_old − b·σ_old = E_old` for any ATR spike whenever `m ≥ b` (SHORT mirrors, levels moving down). The legitimate behavioral consequence that remains: when volatility expands, the exit level advances by *less* than the anchor does.
+    - Exit_ScanBars ≥ 2 × Exit_PivotStrength + 2
+    - Exit_ATR_Period ≥ 1
 - **Order validation before submission:** broker constraints (minimum/maximum lot, lot step, minimum stop distance, freeze level, symbol trading mode, market-closed state, filling mode, margin sufficiency) must be checked before sending any order, and rejected orders logged with the broker's returned error rather than failing silently.
-- **Logging with standardized reason codes:** `A_NO_CROSS`, `A_TREND_CONFIRM_FAIL`, `A_ANGLE_FAIL`, `A_SEPARATION_FAIL`, `B_HTF_BLOCKED`, `C_MOMENTUM_FAIL`, `C_ATR_CONTRACTION`, `D_MAX_POSITIONS`, `D_ACCOUNT_MODE_MISMATCH`, `D_FOREIGN_EXPOSURE_BLOCKED`, `D_SPREAD_EXCEEDED`, `D_CLOSE_FAILED`, `D_ORDER_REJECTED`, `D_INSUFFICIENT_MARGIN`, `DATA_NOT_READY`, `EXECUTION_WOULD_BE_BLOCKED`.
-- **Signal vs. order state distinction:** `RAW_SIGNAL → HTF_APPROVED → MOMENTUM_APPROVED (= STRATEGY_SIGNAL_GENERATED) → POSITION_ALLOWED → ORDER_VALIDATED (pre-fill) → ORDER_SUBMITTED → ORDER_FILLED → SLTP_VALIDATED (post-fill) → SLTP_ATTACHED`. NETTING reversal has its own branch: `POSITION_ALLOWED → CLOSE_VALIDATED → CLOSE_SUBMITTED → CLOSE_CONFIRMED / CLOSE_FAILED → OPEN_VALIDATED (fresh) → OPEN_SUBMITTED → OPEN_FILLED / FAIL_FLAT`.
+- **Logging with standardized reason codes:** `A_NO_CROSS`, `A_TREND_CONFIRM_FAIL`, `A_ANGLE_FAIL`, `A_SEPARATION_FAIL`, `B_HTF_BLOCKED`, `C_MOMENTUM_FAIL`, `C_ATR_CONTRACTION`, `D_MAX_POSITIONS`, `D_ACCOUNT_MODE_MISMATCH`, `D_FOREIGN_EXPOSURE_BLOCKED`, `D_SPREAD_EXCEEDED`, `D_CLOSE_FAILED`, `D_ORDER_REJECTED`, `D_INSUFFICIENT_MARGIN`, `DATA_NOT_READY`, `EXECUTION_WOULD_BE_BLOCKED`. **Module E (v1.13) adds:** `E_STRUCT_EXIT`, `E_HTF_CONFIRMED_OPPOSITE`, `E_NO_ANCHOR`, `E_DATA_NOT_READY`, `EXIT_WOULD_TRIGGER`, plus the behavior-free diagnostics `E_DIAG_MA_CROSSBACK`, `E_DIAG_MINOR_BREAK`, `E_DIAG_HTF_NEUTRAL`. Module E close failures reuse the existing `D_CLOSE_FAILED` with the triggering exit reason attached — no separate code. `E_DATA_NOT_READY` and `E_NO_ANCHOR` are never interchangeable: the first means the search could not run, the second that it ran and found nothing. Only the second is a statement about market structure.
+- **Signal vs. order state distinction:** `RAW_SIGNAL → HTF_APPROVED → MOMENTUM_APPROVED (= STRATEGY_SIGNAL_GENERATED) → POSITION_ALLOWED → ORDER_VALIDATED (pre-fill) → ORDER_SUBMITTED → ORDER_FILLED → SLTP_VALIDATED (post-fill) → SLTP_ATTACHED`. NETTING reversal has its own branch: `POSITION_ALLOWED → CLOSE_VALIDATED → CLOSE_SUBMITTED → CLOSE_CONFIRMED / CLOSE_FAILED → OPEN_VALIDATED (fresh) → OPEN_SUBMITTED → OPEN_FILLED / FAIL_FLAT`. **Module E has its own branch (v1.13):** `POSITION_OPEN → STRUCT_ANCHOR_SET → ANCHOR_RATCHETED (0..n) → STRUCT_EXIT_TRIGGERED → CLOSE_SUBMITTED → CLOSE_CONFIRMED / D_CLOSE_FAILED`. `D_CLOSE_FAILED` returns to `POSITION_OPEN` with state retained — the break is re-tested on the next bar, not queued. A position that never establishes an anchor stays at `POSITION_OPEN` with `E_NO_ANCHOR` logged; this is not terminal and initialization is retried each closed bar.
 - **Built-in veto-rate diagnostics (added v1.9):** the EA maintains a running counter for every reason code above (per module, per bar) for the lifetime of the run, and prints a summary block at `OnDeinit()` — total LTF bars evaluated, and a pass/fail breakdown per module (A/B/C), the count of `STRATEGY_SIGNAL_GENERATED`, and orders actually attempted. When any bars are rejected by `A_ANGLE_FAIL`, the summary additionally reports the min/avg/max of the actual computed `angle_degrees` values on those rejected bars, so `MinCross_Angle_Deg` can be calibrated from the real distribution of a given symbol/timeframe rather than by trial and error. This directly implements the veto-rate analysis called for in Section 6, without requiring external tooling or log-scraping — combined with the debug toggles (Section 1, Module A), a tester can isolate exactly one filter, run a backtest, and read the summary to see whether that filter alone is over-rejecting.
+- **Module E exit accounting (added v1.13):** the same summary reports positions closed by each of `E_STRUCT_EXIT`, `E_HTF_CONFIRMED_OPPOSITE`, SL, TP, and trailing stop; the count of positions that ran with `E_NO_ANCHOR`; counts of `D_CLOSE_FAILED` and of retries; mean/max ratchet count per position; and mean **direction-normalized** anchor travel (`(ProtectedAnchor at exit − InitialAnchor) × Direction`, so LONG and SHORT aggregate to the same sign). Each of the three diagnostic counters is reported alongside how many of those trades were subsequently closed by `E_STRUCT_EXIT` — **counting only events whose timestamp strictly precedes the structural exit's**. A diagnostic firing after the exit says nothing about whether it would have exited earlier, and counting it would manufacture support for a mechanism that did not earn it.
 
 **Canonical engine structure (informative):**
 
@@ -332,6 +580,8 @@ OnTick():
     if not NewClosedLTFCandle():     // dedup via lastProcessedBarTime
         return
     SignalBar = LTF shift 1
+    EvaluateModuleE(SignalBar)       // v1.13: structural exit, BEFORE signal evaluation —
+                                      // may close a position that a new signal then reverses
     A = EvaluateModuleA(SignalBar)   // crossover, trend confirm, angle, separation
     if not A.passed:
         Log(A.reasonCode); return
@@ -367,6 +617,22 @@ OnTick():
 5. Veto-rate analysis: measure the pass rate at each stage explicitly — total raw crosses → A pass % → B pass % → C pass % → position-eligible % → orders actually sent — to surface unintended bottlenecks before tuning is attempted.
 6. **Isolation procedure using the v1.9 debug toggles:** run the backtest with `Enable_TrendConfirm_Check`, `Enable_Angle_Check`, `Enable_Separation_Check` all set to `false`, `Momentum_Filter = NONE`, and `Enable_ATR_VolatilityFilter = false` — this exercises only the mandatory primary condition (LTF crossover + HTF gate) and should produce a healthy trade count if the core logic and historical data are sound. Then re-enable exactly one toggle, re-run, and compare the veto-rate summary (Section 5) against the baseline. Repeat one filter at a time. A filter whose re-enabling collapses `STRATEGY_SIGNAL_GENERATED` back toward zero is either mis-implemented or configured with an unreachable threshold for the tested symbol/timeframe — cross-check its specific counter and (for the angle check) the reported min/avg/max angle values against its configured threshold before concluding which.
 
+**Module E test plan (added v1.13).** Items 7–17 below are specific to the structural exit. Items 8–13 are unit/property tests runnable without a broker; 7 and 14–16 require a backtest.
+
+7. **Module E isolation:** `Enable_StructuralExit = false` (Exit_Mode alone) as baseline, then `true`, on identical entry settings — entries are unchanged between runs, so every difference is attributable to the exit. Compare win rate, mean/median R, and give-back (MFE − realized).
+8. **Pivot predicate:** adjacent equal lows (exactly one pivot, at the newer bar); a monotonic run (no pivots); confirmation delay of exactly `S` bars; `pivotShift < S+1` self-rejection inside the predicate; a pivot at the exact scan-window edge; `Exit_PivotStrength = 1`; an outside bar registering as both a swing high and a swing low. Run against **both** callers (`ExitEngine`, `ReversalDetector`) from the same fixtures — the shared-predicate requirement is only meaningful if it is tested as shared.
+9. **Anchor initialization:** window anchored to the entry bar, verified by initializing the same position at two very different later bars and asserting an identical anchor; a pivot confirmed *after* `EntryBarTime` correctly excluded from initialization and subsequently admitted by the ratchet; the entry-distance requirement (`Exit_MinSwingATR × σ_c`) rejecting a shallow pivot and selecting an older one; a position older than `Exit_ScanBars` bars still initializing.
+10. **Ratchet:** LONG; SHORT; ATR spike at the moment of a ratchet; `Exit_MinSwingATR == Exit_StructureBufferATR` boundary; a non-qualifying candidate correctly skipped and never re-examined (`LastExaminedPivotTime` monotonic).
+11. **Property test — continuous ≡ batch.** Over randomized synthetic price sequences, assert `ProtectedAnchor`, `AnchorBarTime`, and `AnchorATR` are identical at **every** bar between (a) continuous per-bar evaluation and (b) evaluation with randomized skipped blocks of 3–10 bars. This is the single highest-value test in the module: it fails for newest-first candidate selection, and it fails for any `ATR[1]` substituted where a confirmation-bar ATR belongs. Both defects are otherwise invisible in ordinary backtests.
+12. **Restart reconstruction equivalence:** ratchet several times, discard in-memory state, re-adopt, assert the reconstructed anchor matches exactly; plus the insufficient-history case asserting `E_DATA_NOT_READY` and that **no** anchor is accepted.
+13. **State integrity:** `E_DATA_NOT_READY` while a valid anchor is held must leave the anchor untouched and must suppress the break test, with recovery on the following bar resuming from the same anchor; `E_NO_ANCHOR` recovery when a qualifying pivot later confirms; an `iBarShift` exact-lookup failure surfacing as `E_DATA_NOT_READY` rather than silently relocating the anchor.
+14. **Exit triggers and attribution:** structure break LONG; structure break SHORT; HTF confirmed opposite with no anchor present; `HTF_BLOCKED` producing no exit; and the both-true case asserting attribution to `E_STRUCT_EXIT`, not to the backstop.
+15. **Execution paths:** close failure; close retry re-testing the break rather than resubmitting; price recovering so that the retry correctly sends nothing; `ClosePending` duplicate prevention; position disappearing between bar close and evaluation; SIGNAL_ONLY modifying nothing; same-bar exit followed by opposite-direction re-entry.
+16. **Threshold sweep** on `Exit_MinSwingATR` (0 / 0.25 / 0.5 / 1.0) and `Exit_StructureBufferATR` (0 / 0.1 / 0.2 / 0.5) over identical entries. `Exit_MinSwingATR = 0` reproduces "ratchet on every confirmed pivot" and should over-exit — it is the control case proving the significance filter does something.
+17. **Multiple positions / hedging** — specified now, runnable when Module D's multi-position stage lands; `CPositionCore` is currently a single-position implementation.
+
+**Gate on the excluded mechanisms:** no item from Module E's exclusion table is implemented until its diagnostic counter shows it fired *before* `E_STRUCT_EXIT` on a material share of trades **and** that doing so improved the outcome.
+
 ## 7. Assumptions Requiring Confirmation
 
 - **Netting reversal behavior** — confirm Netting_ReverseOnOppositeSignal should default to true. Still open.
@@ -376,6 +642,9 @@ OnTick():
 - **Foreign/manual exposure under NETTING** — Block_On_ForeignNettingExposure defaults true (block). Please confirm this is the right default vs. letting the EA manage combined exposure. Still open.
 - **Spread/deviation policy** — MaxSpread_Points (default 30, hard veto) and MaxDeviation_Points (default 10). Please confirm these defaults are reasonable for target symbols, or whether spread should only be logged rather than vetoing. Still open.
 - **Filter correlation across A/B/C, and within A** — documented as a testing consideration, not a code change. Worth deliberately testing filter combinations rather than assuming "more filters = better."
+- **Module E execution method** — the structural exit closes at market on the closed bar. The alternative is pushing the anchor level to the broker as the position's SL, which survives a terminal disconnection but converts a close-based rule into a wick-triggered one (more shake-outs, and no longer the rule specified). The frozen `AnchorATR` makes the level a fixed number, so either is implementable. Current recommendation: keep close-at-market as primary and leave the protective SL further out as disaster cover. Still open.
+- **Module E thresholds** — `Exit_MinSwingATR = 0.5` and `Exit_StructureBufferATR = 0.2` are starting values, not calibrated. Needs the Section 6 item 16 sweep per symbol/timeframe before going live. Still open.
+- **Two-level structure for Module E** — whether a minor/major swing split adds value over the single significance threshold. To be decided from the `E_DIAG_MINOR_BREAK` counter after live-like backtesting, not from first principles. Still open.
 
 ## 8. Appendix — Angle-Between-Lines Calculation, and the Raw/ATR Normalization Toggle
 
@@ -417,3 +686,4 @@ This value is a magnitude (bounded 0°–90°) — it describes how sharply the 
 | 1.10 | 2026-08-12 | Corresponds to code folder Autotrader/MACrossEA_1.1 (staged modular rebuild): strengthened Module B with a second, independent confirmation. Previously HTF_Bias was decided purely by MA-value monotonicity (HTF_TrendConfirm_Bars); it now additionally requires HTF candle-color agreement over the new HTF_ConfirmationCandles input, with both confirmations required to agree before HTF_Bias is anything other than BLOCKED. The candle-color window deliberately starts at HTF shift 0 (the currently-developing candle) rather than shift 1 — an explicit, called-out exception to the Section 4.0 "never read shift 0" rule, justified by the requirement being "is the developing candle *currently* moving with the trend," re-evaluated fresh on every Module B run rather than frozen at the last HTF close. Confirmed this is a live-value read, not repainting: no earlier decision is ever revised, only the current bar's evaluation can differ tick-to-tick as the live candle develops. Added the corresponding OnInit() validation (HTF_ConfirmationCandles ≥ 1) and centralized-required-bars consideration. |
 | 1.11 | 2026-08-12 | Edited directly into code folder Autotrader/MACrossEA_1.1 (not a new version folder — this is an additive capability alongside the existing design, not a redesign of existing logic; see the versioning-granularity note this revision established). Implemented Module D's Exit_Mode toggle in code for the first time — previously only specified in this document, never built. `CPositionCore::UpdateTrailing()` added: tightens-only, stops-level- and freeze-level-aware, step-gated exactly as specified below (SL movement, not raw price movement), runs every tick independent of the closed-bar signal gate. `OpenTradeForSignal` now branches on InpExitMode: FIXED_SLTP submits both SL and TP as before; TRAILING_STOP submits only the initial protective SL (InpStopLossPoints) with tpRaw=0, and the pre-existing tp<=0-skips-validation path in `CTradeValidator`/`ClampLevel` already handled this correctly with one fix needed — the caller must guard `ClampLevel(isBuy, tpRaw, true)` behind `tpRaw > 0.0` itself, since ClampLevel has no zero-means-absent special case of its own and would otherwise clamp a phantom TP into a real price level. OnInit() validation now branches identically to the exit-mode logic (FIXED_SLTP requires TakeProfit_Points > 0; TRAILING_STOP requires all three Trailing_* inputs > 0 and Trailing_Distance_Points ≤ Trailing_Start_Points as a hard rejection, both already specified below but not previously enforced in code). |
 | 1.12 | 2026-08-12 | New code folder Autotrader/MACrossEA_1.2 (this one is a redesign of Module A's core signal logic, not an additive feature — same category as the 1.1/1.10 Module B change, so per the versioning-granularity note it gets its own folder rather than being edited into 1.1). Mirrored Module B's v1.1 two-confirmation pattern onto Module A's crossover direction: `InpLTFTrendConfirmBars` (renamed from `TrendConfirm_Bars`, pairing with `InpHTFTrendConfirmBars`) and the new `InpLTFConfirmationCandles` are both now mandatory, non-toggleable gates on the raw crossover from step 1 — direction still comes solely from the crossover; confirmation can only veto an already-decided direction, never change it. Unlike Module B's HTF candle check, `LTFCandlesBullish`/`LTFCandlesBearish` deliberately do NOT read shift 0 — the LTF's own developing candle at Module A's evaluation instant has only just begun forming and carries no signal, unlike HTF's substantially-developed one; see Indicators.mqh and Section 4.0. `SignalEvaluation` gained a `LTFConfirmed` field and `ENUM_REJECT_REASON` gained `REJECT_LTF_NOT_CONFIRMED`, both threaded through the veto-rate diagnostic (checked before the HTF gate, so a rejection is attributed to whichever gate actually vetoed it). Added the corresponding OnInit() validation (`InpLTFTrendConfirmBars ≥ 2`, `InpLTFConfirmationCandles ≥ 1`) and folded both into the centralized LTF required-bars calculation. |
+| 1.13 | 2026-08-14 | New document + code folder pair `Markdown/MACrossEA_1.3` + `Autotrader/MACrossEA_1.3` (forked from 1.2, include paths renamed). **Built in this revision:** `SwingStructure.mqh` (canonical pivot predicate + collector, state-free), `BarSource.mqh` (`CBarSource` / `CLiveBarSource` / `CArrayBarSource` — the abstraction the replay-invariance test requires), `ExitEngine.mqh` (`CExitEngine`, pure decision logic — no broker calls, no logging), `CPositionCore::ClosePosition()`, `CIndicatorSet::HTFCandlesBullishClosed/BearishClosed` and `CSignalEngine::ComputeHTFConfirmedBias()` for the closed-candle backstop state, Module E inputs + OnInit validation + OnDeinit exit accounting in `MACrossEA.mq5`, `ReversalDetector.mqh` refactored onto the shared predicate, and `Scripts/TestExitEngine.mq5`. Execution method resolved per the Section 7 recommendation: close-at-market, Module E never touching SL/TP. Added **Module E — LTF Structural Trade Exit**: an open position is monitored against the swing structure that justified it and closed when a closed LTF bar breaks the defended swing by more than an ATR buffer. The mechanism is deliberately singular — a ratcheting anchor at the latest *significant* higher low (LONG) / lower high (SHORT), significance being `Exit_MinSwingATR × ATR` beyond the current anchor — with one backstop (`HTF_Confirmed_Bias` direct opposite) and nothing else granted authority to close. **Pivot definition made normative for the whole codebase** (strict on the newer side, non-strict on the older, so ties resolve to exactly one pivot at the newest bar; predicate enforces its own `shift ≥ S+1` precondition), with a single-canonical-implementation requirement: the predicates move to a new state-free `SwingStructure.mqh` called by both `ExitEngine.mqh` and `ReversalDetector.mqh`, resolving the latter's existing strict-both-sides **behavioral** divergence, both covered by the same fixtures. **Anchor ATR is defined by one rule everywhere** — every anchor carries the ATR of its own *confirmation bar* (shift `p − S`), used identically for the ratchet significance test, the initialization entry-distance test, and the frozen break-test buffer; `ATR[1]` in any of those positions would break replay invariance and restart reconstruction simultaneously. A deliberate consequence is that swing significance is judged permanently in the volatility regime that produced the swing. **Ratcheting is chronological replay** — every pivot newer than `LastExaminedPivotTime` processed oldest→newest, each tested against the anchor as updated by its predecessors — so the anchor is identical whether bars were evaluated continuously or in a batch after missed evaluations; newest-first "first qualifying pivot" selection does not satisfy this and under-protects. Skipping already-examined non-qualifying candidates is provably invariance-safe because the anchor only ratchets one way, so the threshold only rises. The same replay reconstructs adopted/restarted positions deterministically, reproducing all pre-restart ratchet progress with no persisted state, **conditional on** verified OHLC/ATR history depth; insufficient history yields `E_DATA_NOT_READY`, never a partial reconstruction. **Anchor initialization** is anchored to the entry bar rather than the current bar (otherwise a position older than `Exit_ScanBars` can never initialize, and the same position initializes differently depending on when the search runs); admits only candidates whose confirmation bar precedes `EntryBarTime` (otherwise the initial anchor is time-dependent, since a pivot confirming later is invisible early and visible late, skipping the significance test a continuous run would have applied); and requires the anchor to sit `Exit_MinSwingATR × σ_c` from entry. The earlier already-violated rejection/fallback rule was removed as self-defeating — the ratchet re-selected the rejected candidate on the same bar — and wrong in the only case it could fire. **Evaluation order** computes the HTF backstop first (it depends on neither ATR nor pivots, so it survives `E_DATA_NOT_READY`) but attributes last, so a bar where both conditions hold is booked to `E_STRUCT_EXIT`; ordering it otherwise would corrupt the diagnostic the backstop is scoped around. `E_DATA_NOT_READY` and `E_NO_ANCHOR` are formally distinct — the former means the search could not run, must never clear or modify a valid anchor, and suppresses the break test so a zero/unavailable ATR cannot manufacture a break; the latter is non-terminal with an explicit false→true transition. `HTF_Confirmed_Bias` excludes the shift-0 developing HTF candle that Module B's entry-side check includes, since an exit acted on a value that can flip back within the same HTF bar is irreversible; `HTF_BLOCKED` explicitly does not exit and does not alter sensitivity; `HTFEntryBias` is diagnostic-only. Per-position state is keyed by `PositionTicket`; every time→shift conversion uses `iBarShift(..., exact = true)` with `-1` treated as `E_DATA_NOT_READY`. Added close-failure handling (reusing `D_CLOSE_FAILED`, state retained, break re-tested rather than queued), a `ClosePending` duplicate guard, position-vanished finalization, and an explicit detection-price (`Close[1]`) vs. execution-price (first tick after close) distinction for diagnostics. `Exit_MinSwingATR ≥ Exit_StructureBufferATR` is a hard validation that makes the exit level provably non-loosening across a ratchet, removing any need for a runtime invariant check. Module E is orthogonal to Exit_Mode, never modifies SL/TP, closes at market only, evaluates closed-bar only, and runs before Modules A–C so same-bar exit-then-reversal follows Module D's existing netting sequence. Explicitly excluded with rationale and diagnostic counters instead: MA cross-back as a hard exit, two-level minor/major structure, HTF-neutral sensitivity tiers, `Exit_MinBarsInTrade`, monotonicity/candle-count exits, post-exit cooldown, runtime loosening check, already-violated fallback. Added corresponding OnInit() validation, required-bars terms with the `+ S + 1` derivation, reason codes, state-model branch, timestamp-ordered diagnostic pairing, direction-normalized anchor-travel accounting, three open questions, and eleven testing-plan items including a continuous-versus-batch property test over randomized synthetic sequences as the primary regression guard for replay invariance. |
