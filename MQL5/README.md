@@ -31,11 +31,18 @@ Compile `ReversalLab.mq5` in MetaEditor, then run it in the Strategy Tester on a
 
 M1–M3 are in. A tester pass now detects patterns, votes, stages signals across the two phases, fans them out to the 384 cells and writes all three CSVs. What has *not* happened is a run against real bars — the numbers below are from synthetic candles, not a market.
 
-## Tests
+## Checks
+
+Two suites, both runnable without MetaTrader:
 
 ```
-./tests/run.sh
+./tests/syntax_check.sh   # type-checks all 14 files
+./tests/run.sh            # 1694 behavioural checks
 ```
+
+`syntax_check.sh` transpiles the MQL5 sources (five mechanical syntax rewrites, no logic changes) and compiles every file against a runtime shim. It catches typos, unknown members, wrong argument counts and types, and unresolved names across the whole tree — including IndicatorHub, VirtualBook, Tally, CsvLogger and the EA, which the behavioural tests cannot reach. It cannot catch MQL5 rules C++ does not share (stricter narrowing, `const` differences, struct/pointer rules) or anything about the real indicator contracts.
+
+`run.sh` is the behavioural suite:
 
 Compiles the *shipped* headers against `tests/mql5_shim.h` — a small stand-in for the MQL5 runtime — so the tests cover real code rather than a transcription. 1694 checks over the cell algebra, subset admission, all twelve detectors, the prior-trend gate, all four voters, overlap ratio, ranking key, eligibility floors, the Wilson bound, trade construction and config validation.
 
@@ -45,7 +52,7 @@ Several tests are regression guards for defects found during design review, and 
 - The ranking key must not invert for losing cells — the rejected `wilson_lb × expectancy_r` form is computed alongside the shipped one to document the inversion.
 - `overlap_ratio` must sum realised `bars_held`, not `hold_bars` caps, and must not collapse toward 1.0 when a busy period is followed by a long idle stretch.
 
-**These tests do not substitute for a MetaEditor compile.** Anything touching indicator handles, `MqlRates` or file I/O is only verifiable in the terminal.
+**Neither substitutes for a MetaEditor compile.** The real indicator and file-I/O contracts are only verifiable in the terminal.
 
 ## Next
 

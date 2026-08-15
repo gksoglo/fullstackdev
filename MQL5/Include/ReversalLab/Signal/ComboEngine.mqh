@@ -102,7 +102,7 @@ double RMultiple(const VirtualTrade &t, const double cost_price)
   {
    if(t.risk <= 0.0)
       return 0.0;
-   const double gross = (double)t.dir * (t.exit_price - t.entry);
+   const double gross = (double)(int)t.dir * (t.exit_price - t.entry);
    return (gross - cost_price) / t.risk;
   }
 

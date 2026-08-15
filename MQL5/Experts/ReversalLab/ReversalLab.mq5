@@ -91,6 +91,13 @@ int            g_bar_index     = 0;      // monotonic, drives overlap tracking
 int            g_bars_seen     = 0;
 string         g_tf_name;
 
+//--- Prototypes. MQL5 resolves same-file calls regardless of order, but
+//--- declaring them keeps the file order-independent and lets the
+//--- off-platform syntax check (tests/syntax_check.sh) parse it too.
+void OnNewBar();
+void InstantiateOne(const Signal &sig, const VoteVector &votes,
+                    const double entry, const datetime entry_tm);
+
 //+------------------------------------------------------------------+
 string ConfigErrorText(const ConfigError e)
   {

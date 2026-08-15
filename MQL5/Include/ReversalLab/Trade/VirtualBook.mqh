@@ -75,7 +75,7 @@ public:
          m_touched[m_open[i].cell_id] = true;
          m_open[i].bars_held++;              // entry bar counts as 1
 
-         const double sign = (double)m_open[i].dir;
+         const double sign = (double)(int)m_open[i].dir;
 
          //--- Excursions, tracked in both unit systems. risk is
          //--- pattern-derived and ranges 0.25-3.0 ATR, so an R and an ATR
