@@ -43,6 +43,18 @@ string SubsetLabel(const int mask)
    return s;
   }
 
+string IndicatorName(const int slot)
+  {
+   switch(slot)
+     {
+      case IND_RSI:   return "RSI";
+      case IND_MACD:  return "MACD";
+      case IND_STOCH: return "STOCH";
+      case IND_CCI:   return "CCI";
+      default:        return "?";
+     }
+  }
+
 string OutcomeName(const Outcome o)
   {
    switch(o)

@@ -58,6 +58,7 @@ struct CellStats
    double gross_win, gross_loss;    // gross_loss kept as a POSITIVE magnitude
    double sum_mfe_r,   sum_mae_r;
    double sum_mfe_atr, sum_mae_atr;
+   double sum_risk_atr;             // mean risk_atr exposes the ATR-arm confound
    long   sum_bars_held;            // numerator of overlap_ratio
    int    active_bars;              // distinct bars with >= 1 open trade
    int    admitted;                 // signals admitted, incl. those still open
@@ -67,6 +68,7 @@ struct CellStats
       cell_id = -1; samples = 0; confirmed = 0; failed = 0; timeout = 0;
       sum_r = 0.0; sum_r_sq = 0.0; gross_win = 0.0; gross_loss = 0.0;
       sum_mfe_r = 0.0; sum_mae_r = 0.0; sum_mfe_atr = 0.0; sum_mae_atr = 0.0;
+      sum_risk_atr = 0.0;
       sum_bars_held = 0; active_bars = 0; admitted = 0;
      }
 
@@ -153,6 +155,7 @@ struct CellStats
    double AvgMfeAtr() const { return (samples > 0) ? sum_mfe_atr / samples : RL_UNDEFINED; }
    double AvgMaeAtr() const { return (samples > 0) ? sum_mae_atr / samples : RL_UNDEFINED; }
    double TimeoutRate() const { return (samples > 0) ? (double)timeout / samples : 0.0; }
+   double AvgRiskAtr()  const { return (samples > 0) ? sum_risk_atr / samples : RL_UNDEFINED; }
 
    void Record(const VirtualTrade &t)
      {
@@ -170,6 +173,7 @@ struct CellStats
 
       sum_mfe_r   += t.mfe_r;   sum_mae_r   += t.mae_r;
       sum_mfe_atr += t.mfe_atr; sum_mae_atr += t.mae_atr;
+      sum_risk_atr += t.risk_atr;
       sum_bars_held += (long)t.bars_held;
      }
   };
