@@ -25,11 +25,11 @@ Compile `ReversalLab.mq5` in MetaEditor, then run it in the Strategy Tester on a
 | Virtual book: fan-out, marching, pessimistic tie-break, truncation | complete |
 | Overlap tracking and the confidence arithmetic | complete, tested |
 | CSV logs and the ranking report | complete |
-| **Pattern detectors** | **stubbed — every one returns `DIR_NONE` (M3)** |
-| **Indicator voters** | **stubbed — every one returns `0` / `VR_NONE` (M2)** |
+| Indicator voters (M2) | complete, tested |
+| Pattern detectors (M3) | complete, tested |
 | Live order placement | stubbed (M7) |
 
-Because the detectors and voters are stubs, a tester pass initialises cleanly, writes headers, and produces no trades. That is the intended M1 outcome: it exercises the lifecycle without asserting anything about markets.
+M1–M3 are in. A tester pass now detects patterns, votes, stages signals across the two phases, fans them out to the 384 cells and writes all three CSVs. What has *not* happened is a run against real bars — the numbers below are from synthetic candles, not a market.
 
 ## Tests
 
@@ -37,7 +37,7 @@ Because the detectors and voters are stubs, a tester pass initialises cleanly, w
 ./tests/run.sh
 ```
 
-Compiles the *shipped* headers against `tests/mql5_shim.h` — a small stand-in for the MQL5 runtime — so the tests cover real code rather than a transcription. 1619 checks over the cell algebra, subset admission, overlap ratio, ranking key, eligibility floors, the Wilson bound, trade construction and config validation.
+Compiles the *shipped* headers against `tests/mql5_shim.h` — a small stand-in for the MQL5 runtime — so the tests cover real code rather than a transcription. 1694 checks over the cell algebra, subset admission, all twelve detectors, the prior-trend gate, all four voters, overlap ratio, ranking key, eligibility floors, the Wilson bound, trade construction and config validation.
 
 Several tests are regression guards for defects found during design review, and are written to fail loudly if the old behaviour returns:
 
@@ -49,4 +49,6 @@ Several tests are regression guards for defects found during design review, and 
 
 ## Next
 
-M2 (`Indicators/Voters.mqh`) and M3 (`Patterns/Detectors.mqh`) are the two stub files. Each carries its contract in a header comment — in particular, detectors must not apply size gates, which belong to the toggled ATR filter, and voters take a 3-bar window because every rule is a two-bar cross rule.
+M4–M6 are verified only against synthetic data. The open work is a real tester pass: confirm detection counts look sane on a chart (M3's acceptance is visual inspection, which no unit test substitutes for), then check that `overlap_ratio` and the timeout rates behave on real trade distributions.
+
+`Trade/LiveExecutor.mqh` is the one remaining stub (M7).

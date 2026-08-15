@@ -15,6 +15,18 @@
 
 typedef int64_t datetime;
 
+struct MqlRates
+{
+   datetime time;
+   double   open;
+   double   high;
+   double   low;
+   double   close;
+   int64_t  tick_volume;
+   int      spread;
+   int64_t  real_volume;
+};
+
 inline double MathSqrt(double x)  { return std::sqrt(x); }
 inline double MathAbs(double x)   { return std::fabs(x); }
 inline double MathRound(double x) { return std::floor(x + 0.5); }

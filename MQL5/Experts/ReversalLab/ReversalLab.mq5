@@ -40,6 +40,19 @@ input int              InpTrendLookback    = 5;
 input double           InpMinPriorMoveATR  = 1.0;
 input double           InpTweezerTolATR    = 0.10;
 
+//--- Detector shape thresholds (subjective by nature — sweep them)
+input double           InpSmallBodyATR     = 0.10;
+input double           InpWickBodyRatio    = 2.0;
+input double           InpOppWickMaxRatio  = 0.30;
+input double           InpStarBodyRatio    = 0.50;
+
+//--- Vote thresholds
+input double           InpRsiOversold      = 30.0;
+input double           InpRsiOverbought    = 70.0;
+input double           InpStochOversold    = 20.0;
+input double           InpStochOverbought  = 80.0;
+input double           InpCciThreshold     = 100.0;
+
 //--- Indicators / ATR context filter
 input int              InpAtrPeriod        = 14;
 input double           InpMinPatternATR    = 0.8;   // TOGGLED filter, not a detector gate
@@ -91,6 +104,8 @@ string ConfigErrorText(const ConfigError e)
       case CFG_BAD_ELIGIBILITY: return "eligibility floors inconsistent";
       case CFG_BAD_LIVE_CELL:   return "live cell id out of range";
       case CFG_BAD_PERIODS:     return "indicator periods invalid";
+      case CFG_BAD_SHAPE:       return "detector or vote thresholds invalid";
+      case CFG_WINDOW_TOO_SMALL: return "trend lookback exceeds the bar window";
       default:                  return "ok";
      }
   }
@@ -110,6 +125,17 @@ void LoadConfig()
    g_cfg.trend_lookback     = InpTrendLookback;
    g_cfg.min_prior_move_atr = InpMinPriorMoveATR;
    g_cfg.tweezer_tol_atr    = InpTweezerTolATR;
+
+   g_cfg.small_body_atr     = InpSmallBodyATR;
+   g_cfg.wick_body_ratio    = InpWickBodyRatio;
+   g_cfg.opp_wick_max_ratio = InpOppWickMaxRatio;
+   g_cfg.star_body_ratio    = InpStarBodyRatio;
+
+   g_cfg.rsi_oversold       = InpRsiOversold;
+   g_cfg.rsi_overbought     = InpRsiOverbought;
+   g_cfg.stoch_oversold     = InpStochOversold;
+   g_cfg.stoch_overbought   = InpStochOverbought;
+   g_cfg.cci_threshold      = InpCciThreshold;
 
    g_cfg.atr_period      = InpAtrPeriod;
    g_cfg.min_pattern_atr = InpMinPatternATR;
@@ -241,7 +267,8 @@ void OnNewBar()
    if(iTime(_Symbol, InpTimeframe, 1) < InpStartDate)
       return;
 
-   //--- PHASE 1 — detect. May read bar t (shift 1) and earlier. Never shift 0.
+   //--- PHASE 1 — detect. Reads bar t (shift 1) and earlier via the bar
+   //--- window; shift 0 is structurally out of reach.
    double atr = 0.0, atr_sma = 0.0;
    if(!g_hub.ReadAtr(1, atr, atr_sma))
       return;
@@ -250,10 +277,14 @@ void OnNewBar()
    if(!g_hub.ReadVotes(1, votes))
       return;
 
+   BarWindow win;
+   if(!FillBarWindow(_Symbol, InpTimeframe, 1, RequiredWindow(g_cfg), win))
+      return;
+
    Signal staged[];
    int rejected_no_trend = 0;
-   const int n = ScanBar(_Symbol, InpTimeframe, 1, g_bar_index, atr, atr_sma,
-                         g_cfg, staged, rejected_no_trend);
+   const int n = ScanWindow(win, iTime(_Symbol, InpTimeframe, 1), g_bar_index,
+                            atr, atr_sma, g_cfg, staged, rejected_no_trend);
    for(int r = 0; r < rejected_no_trend; r++)
       g_tally.NoteRejected(REJ_NO_TREND);
    if(n <= 0)

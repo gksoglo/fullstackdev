@@ -13,6 +13,8 @@
 #include "../MQL5/Include/ReversalLab/Config.mqh"
 #include "../MQL5/Include/ReversalLab/Stats/Stats.mqh"
 #include "../MQL5/Include/ReversalLab/Signal/ComboEngine.mqh"
+#include "../MQL5/Include/ReversalLab/Patterns/Detectors.mqh"
+#include "../MQL5/Include/ReversalLab/Indicators/Voters.mqh"
 
 #include <cstdio>
 #include <vector>
@@ -440,12 +442,261 @@ static void TestConfigValidation()
 }
 
 //--------------------------------------------------------------------
+// M3 — pattern detectors. Synthetic candles, one shape per case.
+//--------------------------------------------------------------------
+static MqlRates Bar(double o, double h, double l, double c)
+{
+   MqlRates r{};
+   r.open = o; r.high = h; r.low = l; r.close = c;
+   return r;
+}
+
+// Build a window whose pattern bars are `pat` (index 0 = last bar) and
+// whose older bars run a trend of `slope` per bar, so the prior-trend gate
+// can be satisfied or starved deliberately.
+static BarWindow Window(const std::vector<MqlRates> &pat, double slope, double base = 100.0)
+{
+   RLConfig defaults; defaults.SetDefaults();
+   BarWindow w{};
+   const int n = RequiredWindow(defaults);
+   for(size_t i = 0; i < pat.size(); ++i) w.b[i] = pat[i];
+   for(int i = (int)pat.size(); i < n; ++i)
+   {
+      const double px = base + slope * (double)(i - (int)pat.size() + 1);
+      w.b[i] = Bar(px, px + 0.2, px - 0.2, px);
+   }
+   w.count = n;
+   return w;
+}
+
+static void TestDetectors()
+{
+   Section("M3 pattern detectors");
+
+   RLConfig cfg; cfg.SetDefaults();
+   const double atr = 1.0;
+
+   // --- Engulfing -------------------------------------------------
+   {
+      // down bar 100->99, then up bar 98.8->100.2 swallowing it
+      BarWindow w = Window({ Bar(98.8, 100.4, 98.6, 100.2), Bar(100.0, 100.2, 98.8, 99.0) }, 0.0);
+      Check(DetectEngulfBull(w, atr, cfg) == DIR_BULL, "bullish engulfing detected");
+      Check(DetectEngulfBear(w, atr, cfg) == DIR_NONE, "bullish shape is not bearish engulfing");
+      Check(DetectHaramiBull(w, atr, cfg) == DIR_NONE, "engulfing is not harami");
+   }
+   {
+      BarWindow w = Window({ Bar(100.2, 100.4, 98.6, 98.8), Bar(99.0, 100.2, 98.8, 100.0) }, 0.0);
+      Check(DetectEngulfBear(w, atr, cfg) == DIR_BEAR, "bearish engulfing detected");
+   }
+   {
+      // second body smaller -> not engulfing
+      BarWindow w = Window({ Bar(99.2, 99.8, 99.0, 99.6), Bar(100.0, 100.2, 98.8, 99.0) }, 0.0);
+      Check(DetectEngulfBull(w, atr, cfg) == DIR_NONE, "smaller body does not engulf");
+   }
+
+   // --- Hammer / shooting star ------------------------------------
+   {
+      // small body at top, long lower wick
+      BarWindow w = Window({ Bar(100.0, 100.15, 98.0, 100.1) }, 0.0);
+      Check(DetectHammer(w, atr, cfg) == DIR_BULL,    "hammer detected");
+      Check(DetectShootStar(w, atr, cfg) == DIR_NONE, "hammer is not a shooting star");
+   }
+   {
+      BarWindow w = Window({ Bar(100.0, 102.0, 99.85, 99.9) }, 0.0);
+      Check(DetectShootStar(w, atr, cfg) == DIR_BEAR, "shooting star detected");
+   }
+   {
+      // long wick both sides -> neither
+      BarWindow w = Window({ Bar(100.0, 101.0, 99.0, 100.05) }, 0.0);
+      Check(DetectHammer(w, atr, cfg) == DIR_NONE,    "two-sided wick is not a hammer");
+      Check(DetectShootStar(w, atr, cfg) == DIR_NONE, "two-sided wick is not a shooting star");
+   }
+
+   // --- Stars ------------------------------------------------------
+   {
+      // big down bar, small star below it, strong up bar closing past mid
+      BarWindow w = Window({ Bar(97.6, 99.4, 97.5, 99.3),      // b[0] up
+                             Bar(97.5, 97.7, 97.3, 97.55),     // b[1] small, below b[2] body
+                             Bar(100.0, 100.1, 97.9, 98.0) },  // b[2] big down
+                           0.0);
+      Check(DetectMorningStar(w, atr, cfg) == DIR_BULL, "morning star detected");
+      Check(DetectEveningStar(w, atr, cfg) == DIR_NONE, "morning star is not an evening star");
+   }
+   {
+      BarWindow w = Window({ Bar(102.4, 102.5, 100.6, 100.7),
+                             Bar(102.5, 102.7, 102.3, 102.45),
+                             Bar(100.0, 102.1, 99.9, 102.0) },
+                           0.0);
+      Check(DetectEveningStar(w, atr, cfg) == DIR_BEAR, "evening star detected");
+   }
+   {
+      // star body too large relative to the impulse bar
+      BarWindow w = Window({ Bar(97.6, 99.4, 97.5, 99.3),
+                             Bar(97.5, 99.0, 97.3, 98.9),
+                             Bar(100.0, 100.1, 97.9, 98.0) },
+                           0.0);
+      Check(DetectMorningStar(w, atr, cfg) == DIR_NONE, "oversized star body rejected");
+   }
+
+   // --- Piercing / dark cloud -------------------------------------
+   {
+      // down bar 100->98, next opens 97.8 and closes 99.4 (past mid 99, below open 100)
+      BarWindow w = Window({ Bar(97.8, 99.5, 97.7, 99.4), Bar(100.0, 100.1, 97.9, 98.0) }, 0.0);
+      Check(DetectPiercing(w, atr, cfg) == DIR_BULL,   "piercing line detected");
+      Check(DetectEngulfBull(w, atr, cfg) == DIR_NONE, "piercing is not engulfing");
+   }
+   {
+      BarWindow w = Window({ Bar(102.2, 102.3, 100.6, 100.6), Bar(100.0, 102.1, 99.9, 102.0) }, 0.0);
+      Check(DetectDarkCloud(w, atr, cfg) == DIR_BEAR, "dark cloud cover detected");
+   }
+   {
+      // closes below the midpoint -> not piercing
+      BarWindow w = Window({ Bar(97.8, 98.6, 97.7, 98.5), Bar(100.0, 100.1, 97.9, 98.0) }, 0.0);
+      Check(DetectPiercing(w, atr, cfg) == DIR_NONE, "shallow close is not piercing");
+   }
+
+   // --- Harami -----------------------------------------------------
+   {
+      // large down body 100->98, small up body inside it
+      BarWindow w = Window({ Bar(98.5, 99.2, 98.4, 99.1), Bar(100.0, 100.1, 97.9, 98.0) }, 0.0);
+      Check(DetectHaramiBull(w, atr, cfg) == DIR_BULL, "bullish harami detected");
+      Check(DetectEngulfBull(w, atr, cfg) == DIR_NONE, "harami is not engulfing");
+   }
+   {
+      BarWindow w = Window({ Bar(101.5, 101.6, 100.8, 100.9), Bar(100.0, 102.1, 99.9, 102.0) }, 0.0);
+      Check(DetectHaramiBear(w, atr, cfg) == DIR_BEAR, "bearish harami detected");
+   }
+
+   // --- Tweezers ---------------------------------------------------
+   {
+      BarWindow w = Window({ Bar(98.2, 99.0, 98.0, 98.9), Bar(99.5, 99.6, 98.02, 98.2) }, 0.0);
+      Check(DetectTweezerBot(w, atr, cfg) == DIR_BULL, "tweezer bottom detected");
+   }
+   {
+      BarWindow w = Window({ Bar(101.8, 102.0, 101.0, 101.1), Bar(100.5, 101.98, 100.4, 101.8) }, 0.0);
+      Check(DetectTweezerTop(w, atr, cfg) == DIR_BEAR, "tweezer top detected");
+   }
+   {
+      // lows too far apart for the tolerance
+      BarWindow w = Window({ Bar(98.2, 99.0, 98.0, 98.9), Bar(99.5, 99.6, 98.9, 98.2) }, 0.0);
+      Check(DetectTweezerBot(w, atr, cfg) == DIR_NONE, "mismatched lows reject");
+   }
+
+   // --- Every detector must be silent on a featureless bar ---------
+   {
+      BarWindow w = Window({ Bar(100.0, 100.05, 99.95, 100.0),
+                             Bar(100.0, 100.05, 99.95, 100.0),
+                             Bar(100.0, 100.05, 99.95, 100.0) }, 0.0);
+      for(int i = 0; i < PATTERN_COUNT; ++i)
+         Check(RunDetector(PatternFromIndex(i), w, atr, cfg) == DIR_NONE,
+               "flat doji triggers no detector");
+   }
+}
+
+//--------------------------------------------------------------------
+// Prior-trend gate: the window must start AFTER the pattern's own bars.
+//--------------------------------------------------------------------
+static void TestPriorTrend()
+{
+   Section("prior-trend gate");
+
+   RLConfig cfg; cfg.SetDefaults();
+   const double atr = 1.0;
+
+   // Older bars fall as index rises => price was HIGHER before => a
+   // downtrend into the pattern, which is what a bullish reversal needs.
+   BarWindow down = Window({ Bar(98.8, 100.4, 98.6, 100.2), Bar(100.0, 100.2, 98.8, 99.0) }, 1.0);
+   Check(HasPriorTrend(down, 2, DIR_BULL, atr, cfg), "downtrend admits a bullish reversal");
+   Check(!HasPriorTrend(down, 2, DIR_BEAR, atr, cfg), "downtrend rejects a bearish reversal");
+
+   BarWindow flat = Window({ Bar(98.8, 100.4, 98.6, 100.2), Bar(100.0, 100.2, 98.8, 99.0) }, 0.0);
+   Check(!HasPriorTrend(flat, 2, DIR_BULL, atr, cfg), "flat prior action rejects");
+
+   // A move that clears the threshold for a 1-bar pattern may not clear it
+   // for a 3-bar one, because the window shifts further back.
+   BarWindow w = Window({ Bar(100.0, 100.2, 99.8, 100.1) }, 0.30);
+   const bool one = HasPriorTrend(w, 1, DIR_BULL, atr, cfg);
+   const bool three = HasPriorTrend(w, 3, DIR_BULL, atr, cfg);
+   Check(one || three, "the ramp registers for at least one span");
+   Check(HasPriorTrend(w, 1, DIR_BULL, atr, cfg) == one, "gate is deterministic");
+
+   // Window overrun is a rejection, never a read past the array.
+   BarWindow tiny{};
+   tiny.count = 2;
+   Check(!HasPriorTrend(tiny, 2, DIR_BULL, atr, cfg), "insufficient window rejects safely");
+}
+
+//--------------------------------------------------------------------
+// M2 — indicator voters.
+//--------------------------------------------------------------------
+static SeriesWindow S(double t, double t1, double t2)
+{
+   SeriesWindow s; s.Set(t, t1, t2); return s;
+}
+
+static void TestVoters()
+{
+   Section("M2 indicator voters");
+
+   RLConfig cfg; cfg.SetDefaults();
+   VoteReason why = VR_NONE;
+
+   // --- RSI --------------------------------------------------------
+   Check(VoteRsi(S(25, 28, 32), cfg, why) == 1 && why == VR_LEVEL, "RSI oversold votes bull (LEVEL)");
+   Check(VoteRsi(S(75, 72, 68), cfg, why) == -1 && why == VR_LEVEL, "RSI overbought votes bear (LEVEL)");
+   Check(VoteRsi(S(34, 28, 26), cfg, why) == 1 && why == VR_CROSS, "RSI crossing up out of oversold (CROSS)");
+   Check(VoteRsi(S(66, 72, 74), cfg, why) == -1 && why == VR_CROSS, "RSI crossing down out of overbought (CROSS)");
+   Check(VoteRsi(S(50, 51, 49), cfg, why) == 0 && why == VR_NONE, "mid-range RSI is silent");
+
+   // --- MACD -------------------------------------------------------
+   // histogram trough below zero at t-1, now rising
+   Check(VoteMacd(S(0,0,0), S(0,0,0), S(-0.4, -0.6, -0.5), why) == 1 && why == VR_TURN,
+         "MACD histogram turning up from a negative trough (TURN)");
+   Check(VoteMacd(S(0,0,0), S(0,0,0), S(0.4, 0.6, 0.5), why) == -1 && why == VR_TURN,
+         "MACD histogram rolling over from a positive peak (TURN)");
+   // A trough ABOVE zero is a pullback in an uptrend, not a reversal cue.
+   Check(VoteMacd(S(0,0,0), S(0,0,0), S(0.6, 0.4, 0.5), why) == 0,
+         "histogram trough above zero does not vote");
+   // main crossing above signal
+   Check(VoteMacd(S(0.2, -0.1, -0.3), S(0.0, 0.0, 0.0), S(0, 0, 0), why) == 1 && why == VR_CROSS,
+         "MACD main crossing above signal (CROSS)");
+
+   // --- Stochastic -------------------------------------------------
+   // %K oversold AND crossing above %D
+   Check(VoteStoch(S(18, 12, 10), S(15, 14, 13), cfg, why) == 1 && why == VR_CROSS,
+         "stochastic oversold cross votes bull");
+   // oversold but no cross
+   Check(VoteStoch(S(15, 14, 13), S(18, 18, 18), cfg, why) == 0,
+         "oversold without a cross is silent");
+   // cross but not oversold
+   Check(VoteStoch(S(60, 40, 38), S(50, 45, 44), cfg, why) == 0,
+         "cross outside the extreme zone is silent");
+   Check(VoteStoch(S(82, 88, 90), S(85, 86, 87), cfg, why) == -1 && why == VR_CROSS,
+         "stochastic overbought cross votes bear");
+
+   // --- CCI --------------------------------------------------------
+   Check(VoteCci(S(-150, -140, -120), cfg, why) == 1 && why == VR_LEVEL, "CCI below -100 votes bull");
+   Check(VoteCci(S(150, 140, 120), cfg, why) == -1 && why == VR_LEVEL, "CCI above +100 votes bear");
+   Check(VoteCci(S(-80, -110, -130), cfg, why) == 1 && why == VR_CROSS, "CCI crossing up through -100");
+   Check(VoteCci(S(0, 5, -5), cfg, why) == 0 && why == VR_NONE, "mid-range CCI is silent");
+
+   // Silent voters must never admit a non-empty subset.
+   VoteVector v; v.Clear();
+   for(int mask = 1; mask < SUBSET_COUNT; ++mask)
+      Check(!v.Admits(DIR_BULL, mask, CONFIRM_ALL), "all-silent votes admit no real subset");
+   Check(v.Admits(DIR_BULL, 0, CONFIRM_ALL), "all-silent votes still admit the control");
+}
+
+//--------------------------------------------------------------------
 int main()
 {
    std::printf("ReversalLab core math\n");
 
    TestCellAlgebra();
    TestAdmission();
+   TestDetectors();
+   TestPriorTrend();
+   TestVoters();
    TestOverlapRatio();
    TestRankingKey();
    TestEligibility();

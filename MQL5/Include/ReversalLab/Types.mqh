@@ -27,6 +27,34 @@
 #define IND_CCI    3
 #define IND_COUNT  4
 
+//+------------------------------------------------------------------+
+//| BarWindow — the bars a detection may look at, series-ordered:      |
+//| b[0] is bar t (the most recent CLOSED bar), b[1] is t-1, and so on.|
+//|                                                                    |
+//| Detectors take this rather than (symbol, timeframe, shift) for two |
+//| reasons: it makes them pure functions that the off-platform tests   |
+//| can drive with synthetic candles, and it makes the non-repainting   |
+//| rule structural — bar 0 of the chart is never in the window, so a   |
+//| detector cannot reach it even by mistake.                           |
+//+------------------------------------------------------------------+
+#define RL_WINDOW_MAX 16
+
+struct BarWindow
+  {
+   MqlRates b[RL_WINDOW_MAX];
+   int      count;
+  };
+
+//--- Candle geometry. Ratios rather than absolute sizes wherever possible:
+//--- absolute size is the toggled ATR filter's business, not a detector's.
+double BarBody     (const MqlRates &r) { return MathAbs(r.close - r.open); }
+double BarRange    (const MqlRates &r) { return r.high - r.low; }
+double BarUpperWick(const MqlRates &r) { return r.high - MathMax(r.open, r.close); }
+double BarLowerWick(const MqlRates &r) { return MathMin(r.open, r.close) - r.low; }
+bool   BarIsUp     (const MqlRates &r) { return r.close > r.open; }
+bool   BarIsDown   (const MqlRates &r) { return r.close < r.open; }
+double BarBodyMid  (const MqlRates &r) { return (r.open + r.close) * 0.5; }
+
 enum PatternId
   {
    PAT_NONE = 0,               // reserved: keeps 0 as "no pattern"

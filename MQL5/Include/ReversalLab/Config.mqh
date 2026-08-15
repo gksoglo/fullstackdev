@@ -27,6 +27,14 @@ struct RLConfig
    double min_prior_move_atr;
    double tweezer_tol_atr;
 
+   //--- Detector shape thresholds. Exposed as inputs precisely because
+   //--- pattern definitions are subjective and these choices materially
+   //--- change detection counts (PRD §11) — only a knob can be swept.
+   double small_body_atr;      // body at/below this (x ATR) counts as "small"
+   double wick_body_ratio;     // hammer / shooting-star wick vs its own body
+   double opp_wick_max_ratio;  // opposite wick as a fraction of total range
+   double star_body_ratio;     // star's body vs the preceding bar's body
+
    //--- Indicators / ATR context filter
    int    atr_period;
    double min_pattern_atr;     // part of the TOGGLED filter, not a detector gate
@@ -37,6 +45,12 @@ struct RLConfig
    int    atr_sma_period;
    double atr_regime_low;
    double atr_regime_high;
+
+   //--- Vote thresholds. Inputs for the same reason the shape thresholds
+   //--- are: they decide how often each voter speaks at all.
+   double rsi_oversold, rsi_overbought;
+   double stoch_oversold, stoch_overbought;
+   double cci_threshold;
 
    //--- Engine
    ConfirmMode confirm_mode;
@@ -54,6 +68,8 @@ struct RLConfig
       min_risk_atr = 0.25;     max_risk_atr = 3.0;   cost_points = 0.0;
 
       trend_lookback = 5;      min_prior_move_atr = 1.0; tweezer_tol_atr = 0.10;
+      small_body_atr = 0.10;   wick_body_ratio = 2.0;
+      opp_wick_max_ratio = 0.30; star_body_ratio = 0.50;
 
       atr_period = 14;         min_pattern_atr = 0.8;
       rsi_period = 14;
@@ -61,6 +77,9 @@ struct RLConfig
       stoch_k = 14;            stoch_d = 3;          stoch_slow = 3;
       cci_period = 20;
       atr_sma_period = 50;     atr_regime_low = 0.7; atr_regime_high = 1.8;
+      rsi_oversold = 30.0;     rsi_overbought = 70.0;
+      stoch_oversold = 20.0;   stoch_overbought = 80.0;
+      cci_threshold = 100.0;
 
       confirm_mode = CONFIRM_ALL;
       warmup_bars = 100;       min_samples = 30;     min_resolved = 20;
@@ -97,8 +116,14 @@ enum ConfigError
    CFG_BAD_WARMUP,
    CFG_BAD_ELIGIBILITY,
    CFG_BAD_LIVE_CELL,
-   CFG_BAD_PERIODS
+   CFG_BAD_PERIODS,
+   CFG_BAD_SHAPE,
+   CFG_WINDOW_TOO_SMALL
   };
+
+//--- Bars a detection needs: the deepest pattern (3) plus the prior-trend
+//--- window, which starts AFTER the pattern's own bars.
+int RequiredWindow(const RLConfig &c) { return 3 + c.trend_lookback + 1; }
 
 ConfigError ValidateConfig(const RLConfig &c)
   {
@@ -119,6 +144,15 @@ ConfigError ValidateConfig(const RLConfig &c)
    if(c.atr_period < 1 || c.rsi_period < 1 || c.cci_period < 1) return CFG_BAD_PERIODS;
    if(c.macd_fast >= c.macd_slow)               return CFG_BAD_PERIODS;
    if(c.trend_lookback < 1)                     return CFG_BAD_PERIODS;
+   if(c.small_body_atr <= 0.0)                  return CFG_BAD_SHAPE;
+   if(c.wick_body_ratio <= 0.0)                 return CFG_BAD_SHAPE;
+   if(c.opp_wick_max_ratio <= 0.0 || c.opp_wick_max_ratio >= 1.0) return CFG_BAD_SHAPE;
+   if(c.star_body_ratio <= 0.0 || c.star_body_ratio >= 1.0)       return CFG_BAD_SHAPE;
+   if(c.tweezer_tol_atr < 0.0)                  return CFG_BAD_SHAPE;
+   if(c.rsi_oversold >= c.rsi_overbought)       return CFG_BAD_SHAPE;
+   if(c.stoch_oversold >= c.stoch_overbought)   return CFG_BAD_SHAPE;
+   if(c.cci_threshold <= 0.0)                   return CFG_BAD_SHAPE;
+   if(RequiredWindow(c) > RL_WINDOW_MAX)        return CFG_WINDOW_TOO_SMALL;
    return CFG_OK;
   }
 

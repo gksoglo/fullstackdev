@@ -9,9 +9,7 @@
 
 #include "../Types.mqh"
 #include "../Config.mqh"
-#include "Voters.mqh"
-
-#define RL_VOTE_WINDOW 3        // bars t, t-1, t-2 — every rule is a two-bar rule
+#include "Voters.mqh"           // also defines RL_VOTE_WINDOW
 
 class CIndicatorHub
   {
@@ -41,6 +39,17 @@ private:
       ArrayResize(dest, count);
       ArraySetAsSeries(dest, true);
       return CopyBuffer(handle, buffer, shift, count, dest) == count;
+     }
+
+   //--- Read one indicator into a 3-bar vote window.
+   bool ReadSeries(const int handle, const int buffer, const int shift,
+                   SeriesWindow &s) const
+     {
+      double tmp[];
+      if(!ReadBuf(handle, buffer, shift, RL_VOTE_WINDOW, tmp))
+         return false;
+      s.Set(tmp[0], tmp[1], tmp[2]);
+      return true;
      }
 
 public:
@@ -105,36 +114,34 @@ public:
      {
       v.Clear();
 
-      double rsi[], macd_main[], macd_sig[], macd_hist[], k[], d[], cci[];
-      const int n = RL_VOTE_WINDOW;
+      SeriesWindow rsi, macd_main, macd_sig, macd_hist, k, d, cci;
 
-      if(!ReadBuf(m_h_rsi,   0,               shift, n, rsi))       return false;
-      if(!ReadBuf(m_h_macd,  MAIN_LINE,       shift, n, macd_main)) return false;
-      if(!ReadBuf(m_h_macd,  SIGNAL_LINE,     shift, n, macd_sig))  return false;
-      if(!ReadBuf(m_h_stoch, MAIN_LINE,       shift, n, k))         return false;
-      if(!ReadBuf(m_h_stoch, SIGNAL_LINE,     shift, n, d))         return false;
-      if(!ReadBuf(m_h_cci,   0,               shift, n, cci))       return false;
+      if(!ReadSeries(m_h_rsi,   0,           shift, rsi))       return false;
+      if(!ReadSeries(m_h_macd,  MAIN_LINE,   shift, macd_main)) return false;
+      if(!ReadSeries(m_h_macd,  SIGNAL_LINE, shift, macd_sig))  return false;
+      if(!ReadSeries(m_h_stoch, MAIN_LINE,   shift, k))         return false;
+      if(!ReadSeries(m_h_stoch, SIGNAL_LINE, shift, d))         return false;
+      if(!ReadSeries(m_h_cci,   0,           shift, cci))       return false;
 
       //--- MQL5's iMACD exposes main and signal; the histogram is their
-      //--- difference. Materialised here so the voter and the log agree.
-      ArrayResize(macd_hist, n);
-      for(int i = 0; i < n; i++)
-         macd_hist[i] = macd_main[i] - macd_sig[i];
+      //--- difference. Materialised here so voter and log agree.
+      for(int i = 0; i < RL_VOTE_WINDOW; i++)
+         macd_hist.v[i] = macd_main.v[i] - macd_sig.v[i];
 
-      v.vote[IND_RSI]   = VoteRsi (rsi, m_cfg, v.reason[IND_RSI]);
-      v.vote[IND_MACD]  = VoteMacd(macd_main, macd_sig, macd_hist, m_cfg, v.reason[IND_MACD]);
+      v.vote[IND_RSI]   = VoteRsi  (rsi, m_cfg, v.reason[IND_RSI]);
+      v.vote[IND_MACD]  = VoteMacd (macd_main, macd_sig, macd_hist, v.reason[IND_MACD]);
       v.vote[IND_STOCH] = VoteStoch(k, d, m_cfg, v.reason[IND_STOCH]);
-      v.vote[IND_CCI]   = VoteCci (cci, m_cfg, v.reason[IND_CCI]);
+      v.vote[IND_CCI]   = VoteCci  (cci, m_cfg, v.reason[IND_CCI]);
 
-      v.value[IND_RSI]   = rsi[0];
-      v.value[IND_MACD]  = macd_hist[0];
-      v.value[IND_STOCH] = k[0];
-      v.value[IND_CCI]   = cci[0];
+      v.value[IND_RSI]   = rsi.v[0];
+      v.value[IND_MACD]  = macd_hist.v[0];
+      v.value[IND_STOCH] = k.v[0];
+      v.value[IND_CCI]   = cci.v[0];
 
       //--- Extra series the log needs to make a vote reproducible.
-      m_last_macd_main = macd_main[0];
-      m_last_macd_sig  = macd_sig[0];
-      m_last_stoch_d   = d[0];
+      m_last_macd_main = macd_main.v[0];
+      m_last_macd_sig  = macd_sig.v[0];
+      m_last_stoch_d   = d.v[0];
       return true;
      }
 
