@@ -108,6 +108,8 @@ hold_bars = clamp( round( HoldBarsPerATR × RewardRatio × risk / ATR(t) ),
 
 At `risk = 1 ATR` and `RewardRatio = 1.5` this yields 20 bars, matching the previous fixed default. Timeout rate is still reported per ATR-filter arm (§8) so any residual distortion stays visible.
 
+Note that `HoldBarsMax` is slack under the defaults: at the widest risk the bounds permit (`MaxRiskATR = 3.0`) the window is 59 bars, just under the 60 cap, so the upper clamp never engages. It only binds if `MaxRiskATR` or `HoldBarsPerATR` is raised. The lower clamp does bind, at `risk ≤ 0.41 ATR`.
+
 **Cost.** `InpCostPoints` (spread + commission, in points) is charged once per trade, on **every** outcome including timeouts:
 
 ```
