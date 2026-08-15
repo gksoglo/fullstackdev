@@ -96,6 +96,7 @@ datetime       g_last_bar_time = 0;
 int            g_bar_index     = 0;      // monotonic, drives overlap tracking
 int            g_bars_seen     = 0;
 string         g_tf_name;
+string         g_run_tag;      // InpRunId, suffixed on the forward pass
 
 //--- Prototypes. MQL5 resolves same-file calls regardless of order, but
 //--- declaring them keeps the file order-independent and lets the
@@ -197,6 +198,11 @@ int OnInit()
 
    g_tf_name = EnumToString(InpTimeframe);
 
+   //--- MT5 forward testing runs a SECOND pass in the same agent, so
+   //--- OnDeinit fires twice with the same InpRunId and the forward pass
+   //--- would silently overwrite the in-sample CSVs. Tag them apart.
+   g_run_tag = InpRunId + (MQLInfoInteger(MQL_FORWARD) ? "_fwd" : "");
+
    if(!g_hub.Init(_Symbol, InpTimeframe, g_cfg))
      {
       Print("ReversalLab: indicator handles failed to initialise");
@@ -207,7 +213,7 @@ int OnInit()
    g_tally.Init(g_cfg);
    g_live.Init(g_cfg);
 
-   if(!g_log.Init(_Symbol, g_tf_name, InpRunId))
+   if(!g_log.Init(_Symbol, g_tf_name, g_run_tag))
       return INIT_FAILED;
 
    PrintFormat("ReversalLab ready: %d cells, warmup %d bars (needs %d)",
@@ -226,7 +232,7 @@ void OnDeinit(const int reason)
       g_log.WriteTrade(leftovers[i]);
 
    const string rank_path = StringFormat("ReversalLab\\ranking_%s_%s_%s.csv",
-                                         _Symbol, g_tf_name, InpRunId);
+                                         _Symbol, g_tf_name, g_run_tag);
    g_tally.WriteRanking(rank_path);
    g_tally.PrintSummary(20);
    g_live.OnDeinit();

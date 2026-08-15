@@ -105,3 +105,6 @@ template<class T> string EnumToString(T) { return string(); }
 inline bool MathIsValidNumber(double v) { return std::isfinite(v); }
 inline bool PositionSelect(const string &) { return false; }
 inline int  GetLastError() { return 0; }
+
+const int MQL_FORWARD = 1;
+inline long MQLInfoInteger(int) { return 0; }
