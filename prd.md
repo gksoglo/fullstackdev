@@ -65,14 +65,14 @@ The empty subset always admits (this is the pattern-alone control arm).
 
 **Two-phase timing.** Detection and entry happen on different bars, and the design must keep them separate because *the entry price does not exist when the pattern is detected*. Bar `t` closes; the scanner runs; but entry is the open of bar `t+1`, which has not printed yet. Everything derived from entry — `risk`, `target`, the risk-sanity bounds — is therefore uncomputable at detection time.
 
-Signals are consequently **queued, not opened**:
+Signals are consequently **staged, not opened**:
 
-| Phase | When | What happens |
+| Phase | Data it may touch | What happens |
 | --- | --- | --- |
-| **Detect** | close of bar `t` | Patterns scanned, votes computed, `PendingSignal` pushed onto a queue. No trade parameters computed. No cell touched. |
-| **Instantiate** | open of bar `t+1` | Queue drained. `entry` known → `risk`, `target`, risk bounds evaluated **once per signal**. Surviving signals fan out to their cells. |
+| **Detect** | bars `t` and earlier | Patterns scanned, votes computed, `PendingSignal` built. No trade parameters computed. No cell touched. |
+| **Instantiate** | + bar `t+1`'s open | `entry` known → `risk`, `target`, gap check, risk bounds evaluated **once per signal**. Survivors fan out to their cells. |
 
-The queue holds at most one bar's worth of signals and is always drained before that bar is marched, so nothing carries beyond one bar.
+**Both phases run inside the same new-bar callback, and `PendingSignal` is not persistent state.** In MQL5 the new-bar condition is detected on the first tick of bar `t+1` — at which moment bar `t` is closed *and* bar `t+1`'s open has already printed. So the handler scans the just-closed bar, then immediately instantiates using the current bar's open. The two phases are a strict ordering constraint on what data each step may read, not a queue that survives across callbacks; implementing one as durable state would be wasted machinery. `PendingSignal` is a local array within the handler.
 
 **Successful reversal.** The outcome measure. A trade is a success when, within its hold window, price reaches the take-profit before touching the stop.
 
@@ -88,7 +88,16 @@ risk   = |entry − stop|                                 (the R unit, in price)
 target = entry ± (RewardRatio × risk)                   (default 1.5)
 ```
 
-**Risk sanity bounds.** Because `risk` is data-derived it can degenerate, and it is a denominator. A signal is rejected unless `MinRiskATR × ATR(t) ≤ risk ≤ MaxRiskATR × ATR(t)` (defaults 0.25 / 3.0), counted once as `rejected_risk_bounds`. `risk` depends only on entry, `pattern_extreme` and ATR — all cell-independent — so this test is evaluated **once per signal at instantiation, before fan-out**, never per cell. Testing it inside `OpenVirtual` would count a single rejection 384 times in the §8 tallies.
+**Gap check.** Because entry is the *next* bar's open, a weekend or news gap can print it outside the trade's own levels. Two cases, both rejected as `rejected_gap`:
+
+- Entry gaps **through the stop** — the trade is invalidated before it begins, and `risk` would be nonsensically large.
+- Entry gaps **past the target** — the trade would register an instant win on its entry bar, recording a full `+RewardRatio` for a move the signal never predicted.
+
+Formally: reject unless `entry` lies strictly between `stop` and `target`. Without this the second case quietly inflates every cell that fires near a session boundary.
+
+**Risk sanity bounds.** Because `risk` is data-derived it can degenerate, and it is a denominator. A signal is rejected unless `MinRiskATR × ATR(t) ≤ risk ≤ MaxRiskATR × ATR(t)` (defaults 0.25 / 3.0), counted once as `rejected_risk_bounds`. `risk` depends only on entry, `pattern_extreme` and ATR — all cell-independent — so this test, like the gap check, is evaluated **once per signal at instantiation, before fan-out**, never per cell. Testing it inside `OpenVirtual` would count a single rejection 384 times in the §8 tallies.
+
+A gapped entry that survives both checks still resolves under the pessimistic tie-break: if its entry bar spans both stop and target, it is FAILED.
 
 **Hold window scales with risk.** A fixed bar count cannot serve a variable stop distance. A pattern with a 3-ATR stop has its target `1.5 × 3 = 4.5` ATR away and needs a far larger move than a 0.5-ATR-stop trade — given equal bars, the wide-stop trade times out far more often. Because `MinPatternATR` selects *for* large patterns in the filter-on arm, a fixed window would reintroduce exactly the confound the pattern-anchored stop was adopted to remove, this time through the timeout channel. The window is therefore proportional to the distance the trade must travel:
 
@@ -114,7 +123,7 @@ r_multiple = (dir × (exit_price − entry) − cost_price) / risk       where d
 
 If both stop and target fall inside the same bar's range, resolve pessimistically (stop first). This is a deliberate bias toward under-stating results.
 
-**Concurrency — cells never skip signals.** Every cell takes **every** signal it admits, including while it already holds an open trade (`InpAllowConcurrent = true`, the default).
+**Concurrency — cells never skip signals.** Every cell takes **every** signal it admits, including while it already holds one or more open trades. This is unconditional, not configurable.
 
 The alternative — one open trade per cell, dropping the rest — is tempting because it mirrors real trading and yields independent samples, but it silently destroys the headline metric. Cells become busy at *different* times because they admit different signals, so each cell ends up scored on a different subsample:
 
@@ -122,24 +131,42 @@ The alternative — one open trade per cell, dropping the rest — is tempting b
 
 Mask 15 is now credited with a signal the control never saw, so `lift_vs_control` stops comparing like with like. The bias is systematic rather than random: the busy gate preferentially drops *clustered* signals, and signals cluster in exactly the extended-momentum conditions the study is about. It also breaks the subset-nesting property §11 depends on — under a busy gate, mask 15's admitted set is no longer contained in mask 3's.
 
-The cost of always-admit is that trades within a cell overlap and their outcomes are correlated, so `samples` overstates the independent information available. That is a *statistics* problem with known remedies, and §8 applies one; a biased control arm has no remedy at all. `rejected_cell_busy` therefore no longer exists as a rejection reason. Setting `InpAllowConcurrent = false` is retained for diagnostics only, and any run using it must not be compared across cells.
+The cost of always-admit is that trades within a cell overlap and their outcomes are correlated, so `samples` overstates the independent information available. That is a *statistics* problem with known remedies, and §8 applies one; a biased control arm has no remedy at all. There is consequently **no busy gate and no `InpAllowConcurrent` input** — an earlier draft kept the flag "for diagnostics", but the gated code path was removed, leaving a switch nothing read. Concurrency is unconditional.
 
-**End of data.** Virtual trades still open when the run ends are resolved as TIMEOUT at the final bar's close, flagged `truncated = true` in the trade log, and **excluded** from `CellStats` — they had less than `HoldBars` to resolve, so counting them biases the tail of the sample.
+**End of data.** Virtual trades still open when the run ends are resolved as TIMEOUT at the final bar's close, flagged `truncated = true` in the trade log, and **excluded** from `CellStats` — they had less than their own `hold_bars` to resolve, so counting them biases the tail of the sample.
 
 **Sample.** One admitted signal in one cell. Two counts are tracked and must not be conflated:
 
 - `samples` — all admitted signals that produced a resolved, non-truncated trade. Denominator for `expectancy_r`.
-- `n_resolved` = `confirmed + failed` — trades that hit stop or target. Denominator for `hit_rate` and for the Wilson bound.
-- `n_eff` — the **overlap-adjusted effective sample size**, always ≤ `samples`. Because trades within a cell may run concurrently, they share bars and their outcomes are correlated; `samples` therefore counts observations that are not independent. `n_eff` is what the confidence arithmetic in §8 uses.
+- `n_resolved` = `confirmed + failed` — trades that hit stop or target. Denominator for `hit_rate`.
+- `overlap_ratio` — the cell's mean concurrency *while it holds anything at all*.
+- `n_eff`, `n_resolved_eff` — the overlap-adjusted counts the confidence arithmetic in §8 uses.
+
+Because trades within a cell run concurrently, they share bars and their outcomes are correlated, so raw counts overstate the independent information available:
 
 ```
-overlap_ratio = (sum of hold_bars across the cell's trades) / (bars spanned by those trades)
-n_eff         = samples / max(1, overlap_ratio)
+active_bars   = count of DISTINCT bar indices covered by at least one of the cell's trades
+overlap_ratio = sum(bars_held over the cell's trades) / max(1, active_bars)
+
+n_eff          = samples     / overlap_ratio
+n_resolved_eff = n_resolved  / overlap_ratio
 ```
 
-A cell whose trades never overlap has `overlap_ratio = 1` and `n_eff = samples`; a cell running three trades deep on average has `n_eff ≈ samples/3`. This is a deliberately crude first-order correction — a block bootstrap over the trade sequence is the rigorous version and is listed as future work — but it is far better than the implicit assumption of independence.
+Three details carry the weight here, each of which an earlier draft got wrong:
 
-A cell is eligible for ranking only when `samples ≥ MinSamples` (default 30) **and** `n_resolved ≥ MinResolved` (default 20). The second gate exists because a cell can accumulate 30 samples of which 28 are timeouts, leaving a "95% confidence bound" computed on n=2.
+- **The numerator sums `bars_held`, the realised duration — never `hold_bars`, the cap.** Most trades resolve well before their limit, so summing caps would inflate the ratio and drive `n_eff` far below the truth, making every cell look weaker than the data supports.
+- **The denominator counts distinct *covered* bars, not the span from first entry to last exit.** A cell with forty overlapping trades in one year and silence for two more would, on a span denominator, report `overlap_ratio ≈ 1` — full independence for the most clustered cell in the grid, exactly backwards. Counting only bars where a trade was actually open makes the measure immune to idle stretches.
+- **Bar *indices*, not timestamps.** `CellStats` tracks integer bar indices; the count of bars between two `datetime` values is not recoverable across weekends, holidays and session gaps.
+
+A cell whose trades never overlap has `overlap_ratio = 1` and `n_eff = samples`; one running three deep on average has `n_eff ≈ samples/3`. This remains a crude first-order correction — a block bootstrap over the trade sequence is the rigorous version, and is future work — but it beats assuming independence outright.
+
+**Eligibility uses the adjusted counts,** since the floors exist to guarantee sufficient *information*, and raw counts no longer measure that:
+
+```
+Eligible = (n_eff >= MinSamples)  AND  (n_resolved_eff >= MinResolved)      (defaults 30, 20)
+```
+
+Gating on raw `samples` while scoring on `n_eff` would admit a cell with 30 samples at overlap depth 6 — thirty observations by the floor's reckoning, five by the score's. The second gate additionally stops a cell of 30 samples with 28 timeouts from reporting a "95% confidence bound" resting on two resolved trades.
 
 ---
 
@@ -166,7 +193,7 @@ Each detector runs on the closed bar `t` with lookback ≤ 3 bars and returns `N
 
 **The lookback window ends at the bar before the pattern's *first* bar, not before bar `t`.** For a 3-bar morning star ending at `t`, the window is `t−8 … t−3`, never `t−5 … t−1` — the latter would place two of the pattern's own bars inside the trend measurement, partly measuring the pattern against itself. `HasPriorTrend()` therefore takes the pattern's bar count, not just its end shift.
 
-`PatternCount = 12`. Note that patterns are not mutually exclusive — a hammer, a bullish engulfing and a tweezer bottom can all fire on the same bar, and bullish and bearish patterns can both fire. Each is dispatched independently to its own cells; only `LiveExecutor` (§6) needs a tie-break.
+`PatternCount = 12`. Note that patterns are not mutually exclusive — a hammer, a bullish engulfing and a tweezer bottom can all fire on the same bar, and bullish and bearish patterns can both fire. Each is dispatched independently to the cells carrying *its own* `PatternId`, so simultaneous detections never compete: a cell is `(pattern, subset, atr_filter)` and admits one pattern by construction. No tie-break exists or is needed anywhere in the design, including `LiveExecutor` (§6.1.1).
 
 ---
 
@@ -353,7 +380,8 @@ struct VoteVector {
    bool Admits(Direction d, int subset_mask, ConfirmMode mode) const;
 };
 
-// Phase 1 output. Carries NO trade parameters — entry is unknown at bar t's close.
+// Phase 1 output. Carries NO trade parameters — entry is unknown until phase 2.
+// Lives in a local array inside the new-bar handler, never as persistent state (§3).
 struct PendingSignal {
    Signal     sig;
    VoteVector votes;
@@ -382,18 +410,24 @@ struct CellStats {                 // one per cell, CELL_COUNT of these
    double gross_win, gross_loss;   // gross_loss stored as a POSITIVE magnitude
    double sum_mfe_r,   sum_mae_r;
    double sum_mfe_atr, sum_mae_atr;
-   long   sum_hold_bars;           // numerator of overlap_ratio
-   datetime first_entry, last_exit;// denominator span of overlap_ratio
 
-   int    NResolved()    const;    // confirmed + failed  -> hit_rate, Wilson
-   double NEff()         const;    // overlap-adjusted effective N, see §3
-   bool   Eligible()     const;    // samples >= MinSamples && NResolved() >= MinResolved
-   double HitRate()      const;    // confirmed / NResolved()      0 if NResolved()==0
-   double Expectancy()   const;    // sum_r / samples
-   double StdevR()       const;    // NaN if samples < 2 — guard the (n-1) divisor
-   double WilsonLower()  const;    // 95% one-sided bound on HitRate() over NResolved()
-   double ProfitFactor() const;    // gross_win / gross_loss;  undefined if gross_loss==0
-   double Score()        const;    // ranking key, see §8
+   // --- overlap tracking (§3). Realised durations over distinct covered bars.
+   long   sum_bars_held;           // numerator   — NOT sum of hold_bars caps
+   int    active_bars;             // denominator — distinct bar indices with >=1 open trade
+                                   // maintained by MarchOpenTrades: ++ on any bar the cell
+                                   // holds anything, so idle stretches never dilute it
+
+   int    NResolved()      const;  // confirmed + failed
+   double OverlapRatio()   const;  // sum_bars_held / max(1, active_bars)
+   double NEff()           const;  // samples    / OverlapRatio()
+   double NResolvedEff()   const;  // NResolved() / OverlapRatio()
+   bool   Eligible()       const;  // NEff() >= MinSamples && NResolvedEff() >= MinResolved
+   double HitRate()        const;  // confirmed / NResolved()      0 if NResolved()==0
+   double Expectancy()     const;  // sum_r / samples
+   double StdevR()         const;  // NaN if samples < 2 — guard the (n-1) divisor
+   double WilsonLower()    const;  // 95% one-sided bound on HitRate() over NResolvedEff()
+   double ProfitFactor()   const;  // gross_win / gross_loss;  undefined if gross_loss==0
+   double Score()          const;  // ranking key, see §8
 };
 ```
 
@@ -418,12 +452,14 @@ bool  HasPriorTrend(const int shift, const int bar_count,
 bool  InitHandles(const string symbol, const ENUM_TIMEFRAMES tf);
 bool  ReadBar(const int shift, VoteVector &votes, double &atr, bool &atr_ctx_ok);
 
-// --- Phase 1: close of bar t. Queue only; no trade parameters exist yet.
-void  QueueSignal(const Signal &sig, const VoteVector &votes);
+// Both run in one new-bar handler, in this order (§3). PendingSignal[] is a local.
+// --- Phase 1: may read bar t and earlier only. No trade parameters exist yet.
+void  StageSignal(const Signal &sig, const VoteVector &votes, PendingSignal &pending[]);
 
-// --- Phase 2: open of bar t+1. Entry is now known.
-//     Computes risk/target, applies risk bounds ONCE, then fans out.
-void  InstantiatePending(const double bar_open, const double atr);
+// --- Phase 2: may additionally read bar t+1's open, which has already printed.
+//     Computes risk/target, applies the gap check and risk bounds ONCE, then fans out.
+void  InstantiatePending(PendingSignal &pending[], const double bar_open, const double atr);
+bool  PassesGapCheck(const double entry, const double stop, const double target);
 int   HoldBarsFor(const double risk, const double atr);   // risk-scaled, clamped
 
 // ComboEngine.mqh
@@ -461,7 +497,7 @@ Non-negotiable, since every result depends on it:
 
 Two CSVs in `MQL5/Files/ReversalLab/`, written buffered and flushed every `FlushEvery` rows (default 500).
 
-**`signals_<symbol>_<tf>_<runid>.csv`** — one row per detected signal, before cell admission:
+**`signals_<symbol>_<tf>_<runid>.csv`** — one row per signal, written after phase-2 instantiation and before cell admission, so it carries both the detection context and the resulting trade parameters:
 
 ```
 bar_time, entry_time, symbol, tf, pattern, dir, bar_count,
@@ -469,14 +505,14 @@ atr, atr_sma50, pattern_range_atr, pattern_extreme, entry, risk, risk_atr, hold_
 rsi, macd_main, macd_signal, macd_hist, stoch_k, stoch_d, cci,
 vote_rsi, vote_macd, vote_stoch, vote_cci,
 reason_rsi, reason_macd, reason_stoch, reason_cci,
-atr_filter_pass, prior_trend_pass, risk_bounds_pass, admitted_cell_count
+atr_filter_pass, prior_trend_pass, gap_pass, risk_bounds_pass, admitted_cell_count
 ```
 
 Auditability needs two things, and an earlier draft supplied only one. Logging the extra *series* (`%D`, MACD main and signal) was necessary but not sufficient, because every rule in §5 is a **two-bar** rule — a cross is invisible in a single row no matter how many series it carries. The `reason_*` columns close that gap by recording which clause fired (`LEVEL`, `CROSS`, `TURN`, `NONE`), so a reviewer can see *why* a vote was cast without reconstructing the indicator history.
 
 For full offline recomputation, `InpLogIndicatorHistory` adds `_t1`/`_t2` columns for all seven series. It is off by default because it nearly triples the file for a check most runs never need.
 
-Note the row carries both `bar_time` (detection, bar `t`) and `entry_time` (instantiation, bar `t+1`), along with the trade parameters that only exist after phase 2. Signals rejected by the risk bounds are still logged, with `risk_bounds_pass = 0` and `admitted_cell_count = 0`.
+Note the row carries both `bar_time` (detection, bar `t`) and `entry_time` (instantiation, bar `t+1`), along with the trade parameters that only exist after phase 2. Signals rejected by the gap check or the risk bounds are still logged, with the corresponding `*_pass = 0` and `admitted_cell_count = 0` — the rejected population is itself a finding, and §8.5 tallies it.
 
 **`trades_<symbol>_<tf>_<runid>.csv`** — one row per virtual trade:
 
@@ -503,10 +539,11 @@ Per-cell metrics:
 | --- | --- | --- |
 | `samples` | Resolved, non-truncated trades | — |
 | `n_resolved` | `confirmed + failed` (timeouts excluded) | — |
-| `n_eff` | Overlap-adjusted effective sample size (§3) | — |
+| `overlap_ratio` | Mean concurrency while the cell holds anything (§3) | — |
+| `n_eff` / `n_resolved_eff` | Overlap-adjusted counts, `samples`/`n_resolved` ÷ `overlap_ratio` | — |
 | `timeout_rate` | `timeout / samples` — reported per ATR-filter arm | `samples` |
 | `hit_rate` | `confirmed / n_resolved` | `n_resolved` |
-| `wilson_lb` | 95% one-sided Wilson lower bound on `hit_rate` | `n_eff` capped at `n_resolved` |
+| `wilson_lb` | 95% one-sided Wilson lower bound on `hit_rate` | `n_resolved_eff` |
 | `expectancy_r` | Mean R-multiple per trade, net of cost | `samples` |
 | `stdev_r` | Std. dev. of R | `samples` |
 | `profit_factor` | `gross_win / gross_loss` | — |
@@ -525,7 +562,9 @@ Score = expectancy_r − 1.645 × stdev_r / sqrt(n_eff)     if Eligible()
 Score = −DBL_MAX  (written to CSV as empty)               otherwise
 ```
 
-**The divisor is `n_eff`, not `samples`.** Since §3 removed the busy gate, a cell's trades overlap and their outcomes are correlated, so `√samples` would understate the standard error and flatter exactly the busiest cells — the ones whose signals cluster. `n_eff` discounts by the average overlap depth. The same correction applies to `wilson_lb`, which is otherwise a confidence statement resting on an independence assumption the data does not satisfy.
+**The divisor is `n_eff`, not `samples`.** Since §3 removed the busy gate, a cell's trades overlap and their outcomes are correlated, so `√samples` would understate the standard error and flatter exactly the busiest cells — the ones whose signals cluster. `n_eff` discounts by the average overlap depth.
+
+`wilson_lb` takes the same correction through `n_resolved_eff`. Note the two adjusted counts are *parallel*, not interchangeable: `n_eff` scales the all-trades population, `n_resolved_eff` the stop-or-target population, and each divides by the same `overlap_ratio`. An earlier draft capped `n_eff` at `n_resolved`, mixing the two populations into a figure that described neither.
 
 `wilson_lb` is retained as a reported diagnostic — it is the right tool for a proportion — but it is no longer the sort key.
 
@@ -538,7 +577,7 @@ Score = −DBL_MAX  (written to CSV as empty)               otherwise
 2. Per-pattern summary: best subset, its lift, control expectancy.
 3. Per-indicator marginal contribution: **sample-weighted** mean lift across subsets containing that indicator vs. those without. Weighting is required because subsets differ in sample count by orders of magnitude, and the "without" group must **exclude the empty control**, whose lift is 0 by definition and would drag that arm toward zero mechanically.
 4. ATR-filter comparison: aggregate expectancy with filter on vs. off, **reported alongside `timeout_rate` and mean `risk_atr` for each arm**. The filter selects for large patterns, which take wider stops and more distant targets; the risk-scaled hold window (§3) is meant to neutralise that, and these two columns are how you check whether it did.
-5. Rejected-signal counts by reason (`no_trend`, `atr_context`, `no_confirmation`, `risk_bounds`). Each is counted **once per signal**, not once per cell.
+5. Rejected-signal counts by reason (`no_trend`, `atr_context`, `no_confirmation`, `gap`, `risk_bounds`). Each is counted **once per signal**, not once per cell.
 6. **Cells with no data.** Any cell that never fired, or fired but stayed ineligible, is listed separately with its raw admitted count. `RSI+MACD+STOCH+CCI` under `CONFIRM_ALL` requires all four oscillators at extremes simultaneously and will plausibly never reach 30 samples — "never fired" and "fired and showed no edge" are different findings and must not both render as a blank row.
 
 ---
@@ -578,9 +617,8 @@ input double           InpAtrRegimeHigh    = 1.8;
 // --- Engine
 input ConfirmMode      InpConfirmMode      = CONFIRM_ALL;
 input int              InpWarmupBars       = 100;    // validated against indicator periods
-input int              InpMinSamples       = 30;     // eligibility: resolved trades
-input int              InpMinResolved      = 20;     // eligibility: confirmed+failed only
-input bool             InpAllowConcurrent  = true;   // DEFAULT ON — see §3, off biases the control arm
+input int              InpMinSamples       = 30;     // eligibility floor on n_eff
+input int              InpMinResolved      = 20;     // eligibility floor on n_resolved_eff
 input bool             InpLogIndicatorHistory = false; // adds _t1/_t2 columns for full vote replay
 input int              InpLiveCellId       = -1;     // -1 = no real orders; else mirror this ONE cell
 input double           InpLots             = 0.10;
@@ -598,10 +636,11 @@ input string           InpRunId            = "run001";
 | M1 | Skeleton compiles: types, config, empty modules, EA lifecycle | Zero compile errors/warnings; runs a tester pass doing nothing |
 | M2 | `IndicatorHub` + `Voters` | Vote vector printed per bar matches manual chart reading on 20 spot-checked bars |
 | M3 | `PatternScanner` + 12 detectors | Detections match visual chart inspection on a 200-bar sample; prior-trend window verified to start before the pattern's first bar |
-| M3.5 | Two-phase queue | A signal detected at bar `t` produces a trade whose `entry` equals bar `t+1`'s open, verified on 20 cases; the queue is empty at the start and end of every bar |
+| M3.5 | Two-phase staging | A signal detected at bar `t` produces a trade whose `entry` equals bar `t+1`'s open, verified on 20 cases; phase 1 provably reads no bar later than `t`; a synthetic gap entry beyond stop and one beyond target are both rejected as `gap` |
 | M4 | `VirtualBook` single-cell | One cell's simulated P&L reconciles with a hand-computed ledger over 50 trades, cost included; `bars_held` counts the entry bar as 1; risk-bound rejections fire on synthetic edge cases and are counted once, not 384 times |
 | M5 | `ComboEngine` full 384-cell fan-out | `CellId` round-trips for all 384 combinations with no collision and no index outside `[0, 383]`; the control cell's sample count equals the raw pattern count that passed the risk bounds |
-| M6 | `CsvLogger` + `Tally` + ranking | Report generated; `lift_vs_control` computed; ranking stable across two identical runs; a synthetic all-losing cell set ranks in strictly increasing order of expectancy; `n_eff < samples` wherever trades overlap; undefined metrics serialise as empty fields, never `1.79e308` |
+| M6 | `CsvLogger` + `Tally` + ranking | Report generated; `lift_vs_control` computed; ranking stable across two identical runs; a synthetic all-losing cell set ranks in strictly increasing order of expectancy; undefined metrics serialise as empty fields, never `1.79e308` |
+| M6.1 | `overlap_ratio` correctness | Non-overlapping synthetic cell → `overlap_ratio == 1`, `n_eff == samples`; a cell of N trades each open for the same B bars, all simultaneous → `overlap_ratio == N`; a cell clustered in one period then idle for twice as long reports the **same** ratio as the cluster alone (idle bars must not dilute it) |
 | M7 | `LiveExecutor` (optional arm) | With `InpLiveCellId` pinned, real tester trades match the cell's **flat-entry** virtual trades 1:1 on entry time, exit time and R; concurrent ones appear as `live_skipped` |
 
 ---
