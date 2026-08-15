@@ -125,6 +125,35 @@ Five indicators. ATR is structural (sizing + context filter, never a directional
 
 `MomentumIndicatorCount = 4` → `SubsetCount = 2^4 = 16` (bitmask `0b0000`…`0b1111`, `0` = control).
 
+### 5.1 The 16 subsets
+
+Bit assignment: `bit0 = RSI`, `bit1 = MACD`, `bit2 = STOCH`, `bit3 = CCI`. The `subset_label` column is what `CsvLogger` writes, so output is readable without decoding masks.
+
+| Mask | Bits | `subset_label` | Size |
+| --- | --- | --- | --- |
+| 0 | `0000` | `NONE` (control) | 0 |
+| 1 | `0001` | `RSI` | 1 |
+| 2 | `0010` | `MACD` | 1 |
+| 3 | `0011` | `RSI+MACD` | 2 |
+| 4 | `0100` | `STOCH` | 1 |
+| 5 | `0101` | `RSI+STOCH` | 2 |
+| 6 | `0110` | `MACD+STOCH` | 2 |
+| 7 | `0111` | `RSI+MACD+STOCH` | 3 |
+| 8 | `1000` | `CCI` | 1 |
+| 9 | `1001` | `RSI+CCI` | 2 |
+| 10 | `1010` | `MACD+CCI` | 2 |
+| 11 | `1011` | `RSI+MACD+CCI` | 3 |
+| 12 | `1100` | `STOCH+CCI` | 2 |
+| 13 | `1101` | `RSI+STOCH+CCI` | 3 |
+| 14 | `1110` | `MACD+STOCH+CCI` | 3 |
+| 15 | `1111` | `RSI+MACD+STOCH+CCI` | 4 |
+
+Composition: 1 empty + 4 singles + 6 pairs + 4 triples + 1 quad.
+
+**Mask 0 is the control arm** — it admits every signal passing the pattern gate, with no momentum confirmation. It is the baseline `lift_vs_control` (§8) is measured against.
+
+**Note on `ConfirmMode`:** majority means *more than half*, so a single indicator needs 1 of 1 and a pair needs 2 of 2 — identical to `CONFIRM_ALL`. The two modes only diverge on the four triples (2 of 3) and the quad (3 of 4), i.e. 5 of 16 subsets. Doubling the whole grid to gain 5 distinct configurations is poor value; see open question 2.
+
 **Grid size:** `12 patterns × 16 subsets × 2 ATR states = 384 cells`.
 
 Swap-in candidates for v2, behind the same `IIndicatorVoter` interface: Williams %R, ROC/Momentum, ADX (as a trend-strength gate rather than a voter).
@@ -408,7 +437,7 @@ input string           InpRunId            = "run001";
 ## 12. Open questions
 
 1. Timeframe of record for the first run — H1 assumed, but M15 gives more samples and D1 gives cleaner reversals.
-2. Should `ConfirmMode` become a 5th grid dimension (768 cells) rather than a global input?
+2. Should `ConfirmMode` become a 5th grid dimension rather than a global input? Note from §5.1 that it only changes behaviour for 5 of the 16 subsets — so the cheap version is to expand *only* the triples and the quad under `MAJORITY`, adding 60 cells (`12 × 5`) instead of doubling to 768.
 3. Should divergence-based votes (price/oscillator divergence) be added as separate voters, or as a mode of the existing ones?
 4. Is a fixed `RewardRatio` target the right success definition, or should success be "MFE ≥ 1 ATR before MAE ≥ 1 ATR" independent of an exit rule?
 
