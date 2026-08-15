@@ -334,6 +334,7 @@ void InstantiateOne(const Signal &sig, const VoteVector &votes,
    //--- state matches the signal's. The empty subset is the control arm and
    //--- always admits, which is what lift_vs_control is measured against.
    int admitted = 0;
+   int confirmed_subsets = 0;          // admits by a NON-EMPTY subset
    for(int mask = 0; mask < SUBSET_COUNT; mask++)
      {
       if(!votes.Admits(sig.dir, mask, g_cfg.confirm_mode))
@@ -350,10 +351,16 @@ void InstantiateOne(const Signal &sig, const VoteVector &votes,
          g_tally.NoteAdmitted(cell);
          g_live.OnCellTrade(cell, proto);
          admitted++;
+         if(mask != 0)
+            confirmed_subsets++;
         }
      }
 
-   if(admitted == 0)
+   //--- "No confirmation" means no INDICATOR subset admitted. Testing
+   //--- `admitted == 0` could never fire: the empty subset is the control
+   //--- arm and admits unconditionally, so the count was structurally
+   //--- stuck at zero and reported nothing.
+   if(confirmed_subsets == 0)
       g_tally.NoteNoConfirmation();
 
    g_log.WriteSignal(_Symbol, g_tf_name, sig, votes, entry_tm, entry,
