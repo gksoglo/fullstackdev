@@ -24,6 +24,9 @@ struct SeriesWindow
   {
    double v[RL_VOTE_WINDOW];        // v[0] = bar t, v[1] = t-1, v[2] = t-2
 
+   void Clear()
+     { for(int i = 0; i < RL_VOTE_WINDOW; i++) v[i] = 0.0; }
+
    void Set(const double a, const double b, const double c)
      { v[0] = a; v[1] = b; v[2] = c; }
   };

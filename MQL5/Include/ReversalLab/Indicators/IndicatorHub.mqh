@@ -125,6 +125,10 @@ public:
 
       //--- MQL5's iMACD exposes main and signal; the histogram is their
       //--- difference. Materialised here so voter and log agree.
+      //--- Cleared first: unlike its siblings, macd_hist is never filled by
+      //--- ReadSeries, so it is the one window whose initialisation depends
+      //--- entirely on the loop below covering every element.
+      macd_hist.Clear();
       for(int i = 0; i < RL_VOTE_WINDOW; i++)
          macd_hist.v[i] = macd_main.v[i] - macd_sig.v[i];
 

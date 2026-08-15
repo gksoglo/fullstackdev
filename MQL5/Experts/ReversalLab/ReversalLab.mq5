@@ -7,7 +7,7 @@
 //|  protections. Do not point this at a funded account.                |
 //+------------------------------------------------------------------+
 #property copyright "ReversalLab"
-#property version   "0.1"
+#property version   "1.00"      // MQL5 requires x.yy / xxx.yyy, not "0.1"
 #property description "M1 skeleton: lifecycle, two-phase staging and the 384-cell fan-out."
 
 #include <ReversalLab/Types.mqh>
