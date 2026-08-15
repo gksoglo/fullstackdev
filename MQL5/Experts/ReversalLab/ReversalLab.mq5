@@ -55,7 +55,10 @@ input double           InpCciThreshold     = 100.0;
 
 //--- Indicators / ATR context filter
 input int              InpAtrPeriod        = 14;
-input double           InpMinPatternATR    = 0.8;   // TOGGLED filter, not a detector gate
+//--- Part of the TOGGLED ATR filter, not a detector gate. NOTE: a trailing
+//--- comment on an `input` line becomes its label in the tester UI and hides
+//--- the parameter name, so these notes stay above the declaration.
+input double           InpMinPatternATR    = 0.8;
 input int              InpRsiPeriod        = 14;
 input int              InpMacdFast         = 12;
 input int              InpMacdSlow         = 26;
@@ -71,9 +74,12 @@ input double           InpAtrRegimeHigh    = 1.8;
 //--- Engine
 input ConfirmMode      InpConfirmMode      = CONFIRM_ALL;
 input int              InpWarmupBars       = 100;
-input int              InpMinSamples       = 30;    // floor on n_eff
-input int              InpMinResolved      = 20;    // floor on n_resolved_eff
-input int              InpLiveCellId       = -1;    // -1 = no real orders
+//--- Eligibility floors, applied to the overlap-adjusted counts:
+//--- InpMinSamples  -> n_eff,  InpMinResolved -> n_resolved_eff
+input int              InpMinSamples       = 30;
+input int              InpMinResolved      = 20;
+//--- Live arm: -1 disables real orders; otherwise the ONE cell to mirror.
+input int              InpLiveCellId       = -1;
 input double           InpLots             = 0.10;
 input bool             InpLogIndicatorHistory = false;
 input string           InpRunId            = "run001";
