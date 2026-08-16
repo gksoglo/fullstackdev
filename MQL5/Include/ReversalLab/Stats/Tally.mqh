@@ -238,6 +238,7 @@ public:
       for(int i = 0; i < IND_COUNT; i++)
         {
          double w_with = 0.0, l_with = 0.0, w_without = 0.0, l_without = 0.0;
+         int    c_with = 0, c_without = 0;
          for(int c = 0; c < CELL_COUNT; c++)
            {
             const int mask = CellSubsetMask(c);
@@ -249,13 +250,26 @@ public:
             if(lift == RL_UNDEFINED)
                continue;
             const double w = (double)m_cells[c].samples;
-            if((mask & (1 << i)) != 0) { w_with    += w; l_with    += w * lift; }
-            else                       { w_without += w; l_without += w * lift; }
+            if((mask & (1 << i)) != 0) { w_with    += w; l_with    += w * lift; c_with++;    }
+            else                       { w_without += w; l_without += w * lift; c_without++; }
            }
-         const double a = (w_with    > 0.0) ? l_with    / w_with    : 0.0;
-         const double b = (w_without > 0.0) ? l_without / w_without : 0.0;
-         PrintFormat("  %-6s with=%+.3f (n=%.0f)  without=%+.3f (n=%.0f)  marginal=%+.3f",
-                     IndicatorName(i), a, w_with, b, w_without, a - b);
+
+         //--- An empty arm makes the marginal undefined, NOT zero. Printing
+         //--- a number here invents a measurement: with no eligible cell
+         //--- containing the indicator, "0.000 minus the other arm" reads as
+         //--- a finding when it only means the indicator was never testable.
+         if(c_with == 0 || c_without == 0)
+           {
+            PrintFormat("  %-6s marginal=n/a  (with: %d cells, without: %d cells — "
+                        "not enough eligible cells to compare)",
+                        IndicatorName(i), c_with, c_without);
+            continue;
+           }
+
+         const double a = l_with    / w_with;
+         const double b = l_without / w_without;
+         PrintFormat("  %-6s with=%+.3f (%d cells, n=%.0f)  without=%+.3f (%d cells, n=%.0f)  marginal=%+.3f",
+                     IndicatorName(i), a, c_with, w_with, b, c_without, w_without, a - b);
         }
      }
 
