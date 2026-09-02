@@ -569,14 +569,55 @@ different question than the column asks (E-7).
 
 ## Build Status
 
+**Code written is not a stage passed.** A stage is passed only when every item in its
+Definition of Done has been checked against real historical data in the MT5 tester. Until
+then the status is "in progress", however complete the code looks.
+
 | Stage | Status | Artifacts |
 |---|---|---|
-| 0 | **Implemented** | `mql5/Include/HTFLTF/{Indicators,Params,BarGuard,Funnel}.mqh`, `reference/htfltf/{indicators,params,funnel}.py` |
-| 1 | **Implemented** | `mql5/Include/HTFLTF/Swings.mqh`, `reference/htfltf/swings.py` |
+| 0 | **In progress — DoD not passed** | `mql5/Include/HTFLTF/{Indicators,Params,BarGuard,Funnel}.mqh`, `reference/htfltf/{indicators,params,barguard,funnel}.py` |
+| 1 | **In progress — DoD not passed** | `mql5/Include/HTFLTF/Swings.mqh`, `reference/htfltf/swings.py` |
 | 2–13 | Not started | — |
 
-Stage 0 and Stage 1 are implemented twice: once in MQL5 for the EA, and once in Python as
-the independent reference implementation that Stage 0's Definition of Done explicitly calls
-for ("match independently-calculated reference values… from Python/Excel"). The Python
-suite in `reference/tests/` is the executable form of the §39 checks that apply at these
-stages. See [`../reference/README.md`](../reference/README.md) for how to run it.
+Stage 0 and Stage 1 are built twice: once in MQL5 for the EA, and once in Python as the
+independent reference implementation that Stage 0's DoD explicitly calls for ("match
+independently-calculated reference values… from Python/Excel"). `mql5/Experts/HTFLTF_Stage01.mq5`
+is the diagnostic harness that exercises both stages; it places no orders.
+
+### What has been verified
+
+| Check | Evidence |
+|---|---|
+| MQL5 compiles clean | MetaEditor: 0 errors, 0 warnings |
+| ATR/ER match values hand-computed from §37 / §7.1 | `tests/test_indicators.py` |
+| MQL5 and Python agree, series indexing included | `tests/test_mql5_parity.py` — 200 randomized series per function, exact |
+| §38 rejects every invalid input, naming the parameter (§39 #12) | `tests/test_params.py` — Python side |
+| Equal highs/lows disqualify both tied bars (§39 #1) | `tests/test_swings.py` |
+| ER flat window → 0, no `inf`/`nan` (§39 #15) | `tests/test_indicators.py`, both implementations |
+| Short-side momentum classifies STRONG (§39 #13) | `tests/test_indicators.py` |
+| Funnel attributes each bar to exactly one gate | `tests/test_funnel.py` |
+
+### What is still outstanding
+
+Everything below needs the MT5 tester and real historical data. These are the DoD items
+that actually close the gate:
+
+**Stage 0**
+
+- ATR/ROC/ER match the reference on ≥ 20 spot-checked bars of real historical data. The
+  tests above prove the two implementations agree with each other and with hand-computed
+  formulas; they do not prove either is right on live market data.
+- Tick/bar ratio observed over a real run — the bar logic firing exactly once per bar
+  cannot be confirmed without ticks.
+- §38 validation exercised in MetaEditor by misconfiguring each parameter in turn. The
+  MQL5 check list has compiled but has never executed.
+- ATR/ROC/ER diagnostic output eyeballed against a live chart.
+
+**Stage 1**
+
+- Pivot markers plotted over a multi-month window and compared against manual chart
+  reading in three regions: trending, ranging, choppy.
+- Swings-per-week count confirmed plausible, nonzero and roughly stable.
+- Sanity-test K ∈ {2, 3, 5} to confirm behaviour scales sensibly before locking K in.
+
+Only when those are done does Stage 2 begin.

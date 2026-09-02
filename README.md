@@ -22,9 +22,14 @@ check the first.
 
 ## Current state
 
-Roadmap **Stages 0 and 1 are implemented**; Stages 2–13 are not started. The EA places no
-orders yet — by design. Trades first appear at Stage 8, after the structure, regime,
-setup, BOS and momentum layers have each been verified on their own.
+Roadmap **Stages 0 and 1 are in progress** — the code is written and compiles clean, but
+neither stage has passed its Definition of Done yet: both require verification against real
+historical data in the MT5 tester. Stages 2–13 are not started. The EA places no orders —
+by design. Trades first appear at Stage 8, after the structure, regime, setup, BOS and
+momentum layers have each been verified on their own.
+
+See the [build status](docs/roadmap.md#build-status) for exactly what is verified and what
+is still outstanding.
 
 | | |
 |---|---|

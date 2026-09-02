@@ -20,7 +20,7 @@
 //| PRD v0.7. See docs/roadmap.md for what Stage 2 adds next.          |
 //+------------------------------------------------------------------+
 #property copyright "HTF/LTF Trend-Continuation EA"
-#property version   "0.1"
+#property version   "0.10"
 #property strict
 
 #include <HTFLTF/Params.mqh>
