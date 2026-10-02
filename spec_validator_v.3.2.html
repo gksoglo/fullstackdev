@@ -616,11 +616,23 @@ function render(){
     correctedCompactRows.push(fields.slice());
   }
 
+  // One summary line per data block, listed under the data: inspection date,
+  // product-side, production date, quantity - e.g. "20260902  DN8PE-LHD  20260708  260".
+  // CSV blocks take these from their heading line; Excel-sheet blocks only
+  // carry the inspection date, so the other two columns stay blank.
+  const summaryRows = [];
+  function summaryFor(block){
+    const name = block.code.replace(/\s+/g, '') + (block.side ? '-' + block.side : '');
+    const h = block.headingFields;
+    return h ? [h[1], name, h[2], h[3], ''] : [block.date || '', name, '', '', ''];
+  }
+
   let blockIdx = 0;
   for(const entry of state.entries){
     for(const block of entry.blocks){
       if(!block.rows.length) continue; // header-only block with no dimension rows - nothing to show
       blockIdx++;
+      summaryRows.push(summaryFor(block));
       if(block.headingFields) pushHeadingFields(block.headingFields);
       else pushTitle(`${blockIdx}. ${block.code} ${block.side}`.trim(), block.date);
       for(const row of block.rows){
@@ -633,6 +645,17 @@ function render(){
       for(const row of entry.unmatchedRows){
         renderRow(validateRow('', '', row), row.rawValues);
       }
+    }
+  }
+
+  // separator line, then the per-block summary rows (same on both sides)
+  if(summaryRows.length){
+    const sep = ['----------', '----------', '----------', '----------', '----------'];
+    tableHtml += '<tr><td colspan="5" style="border-top:2px solid var(--text); padding:0;"></td></tr>';
+    compactRows.push(sep); correctedCompactRows.push(sep.slice());
+    for(const r of summaryRows){
+      tableHtml += '<tr>' + r.map(x => `<td style="text-align:left;font-family:var(--mono);white-space:nowrap;">${escapeHtml(x)}</td>`).join('') + '</tr>';
+      compactRows.push(r); correctedCompactRows.push(r.slice());
     }
   }
 
