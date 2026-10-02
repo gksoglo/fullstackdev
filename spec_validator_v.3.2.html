@@ -81,7 +81,7 @@
 
 <div class="panel">
   <h2>1. Paste data</h2>
-  <textarea id="pasteBox" placeholder="Paste the rows here, e.g.&#10;MX5 LHD Aspheric mirror&#10;① F 242.85 (+0.15/-0.15)&#9;CMM(비접촉)&#9;초.중.종&#9;242.737&#9;242.745&#9;242.769&#9;242.743&#9;242.728&#10;② ..."></textarea>
+  <textarea id="pasteBox" placeholder="Paste the rows here - Excel check-sheet rows, or the compact layout (1. LX3 LHD,20261002,... followed by rows of 5 numbers). e.g.&#10;MX5 LHD Aspheric mirror&#10;① F 242.85 (+0.15/-0.15)&#9;CMM(비접촉)&#9;초.중.종&#9;242.737&#9;242.745&#9;242.769&#9;242.743&#9;242.728&#10;② ..."></textarea>
   <div class="row">
     <button id="addBtn">Add data</button>
     <button id="removeLastBtn" class="secondary">Remove last add</button>
@@ -381,7 +381,8 @@ function parseBlocks(text){
 // code's CMM specs (symmetric +/- tolerance) and the rest with its Vernier
 // specs (0 ~ -0.5). Inside each group a row goes to the Template spec whose
 // acceptance window is closest to the row's average.
-function parseCsvLine(line){
+function parseCsvLine(line, delim){
+  delim = delim || (line.indexOf('\t') !== -1 ? '\t' : ',');
   const out = [];
   let cur = '', inQ = false;
   for(let i = 0; i < line.length; i++){
@@ -390,16 +391,21 @@ function parseCsvLine(line){
       if(c === '"'){ if(line[i+1] === '"'){ cur += '"'; i++; } else inQ = false; }
       else cur += c;
     }else if(c === '"' && cur === ''){ inQ = true; }
-    else if(c === ','){ out.push(cur.trim()); cur = ''; }
+    else if(c === delim){ out.push(cur.trim()); cur = ''; }
     else cur += c;
   }
   out.push(cur.trim());
   return out;
 }
 const CSV_HEADING_RE = /^\s*\d+\s*\.\s+\S/;   // "1. LX3 LHD" - space after the dot, so "235.783" can't match
+// True when the text is the compact layout: a heading line like
+// "1. LX3 LHD,20261002,..." - comma-separated (a .csv's own text) or
+// tab-separated (the same rows copied out of Excel) - followed by bare rows.
 function looksLikeCsvFormat(text){
-  if(text.indexOf('\t') !== -1) return false;
-  return text.split(/\r?\n/).some(l => CSV_HEADING_RE.test(parseCsvLine(l)[0]) && l.indexOf(',') !== -1);
+  return text.split(/\r?\n/).some(l => {
+    const f = parseCsvLine(l);
+    return f.length >= 2 && CSV_HEADING_RE.test(f[0]);
+  });
 }
 function canonicalCode(code){
   const up = trm(code).toUpperCase();
