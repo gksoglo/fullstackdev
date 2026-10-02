@@ -1,0 +1,872 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Spec Validator</title>
+<style>
+  :root{
+    --bg:#f6f7f8; --panel:#ffffff; --border:#dde1e6; --text:#1f2530; --muted:#6b7280;
+    --accent:#2563eb; --accent-dark:#1d4ed8; --green:#22c55e; --green-bg:#d9f7e3;
+    --red:#ef4444; --gray-bg:#f1f2f4; --mono:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; padding:24px; background:var(--bg); color:var(--text);
+    font-family:-apple-system,"Segoe UI",Roboto,"Malgun Gothic",sans-serif;
+    font-size:14px; line-height:1.5;
+  }
+  h1{font-size:19px; margin:0 0 4px;}
+  .sub{color:var(--muted); font-size:13px; margin:0 0 20px;}
+  .panel{
+    background:var(--panel); border:1px solid var(--border); border-radius:10px;
+    padding:18px 20px; margin-bottom:18px;
+  }
+  .panel h2{font-size:14px; margin:0 0 10px; color:var(--text);}
+  textarea{
+    width:100%; min-height:160px; resize:vertical; font-family:var(--mono);
+    font-size:12.5px; padding:10px; border:1px solid var(--border); border-radius:8px;
+    background:#fafbfc; color:var(--text);
+  }
+  .row{display:flex; gap:10px; align-items:center; margin-top:10px; flex-wrap:wrap;}
+  button{
+    border:none; border-radius:7px; padding:8px 16px; font-size:13px; font-weight:600;
+    cursor:pointer; background:var(--accent); color:#fff;
+  }
+  button:hover{background:var(--accent-dark);}
+  button.secondary{background:#fff; color:var(--text); border:1px solid var(--border);}
+  button.secondary:hover{background:var(--gray-bg);}
+  button.danger{background:#fff; color:var(--red); border:1px solid #fca5a5;}
+  button.danger:hover{background:#fef2f2;}
+  .hint{color:var(--muted); font-size:12px; margin-top:6px;}
+  #summary{font-size:13px; margin-bottom:14px; padding:10px 14px; border-radius:8px; background:#eef2ff; border:1px solid #c7d2fe;}
+  #summary.hasOut{background:#fef2f2; border-color:#fecaca;}
+  .block{border:1px solid var(--border); border-radius:9px; margin-bottom:14px; overflow:hidden;}
+  .block-head{
+    background:#f8fafc; padding:9px 14px; display:flex; justify-content:space-between;
+    align-items:center; border-bottom:1px solid var(--border);
+  }
+  .block-head .name{font-weight:700; font-size:13.5px;}
+  .block-head .name .side{color:var(--muted); font-weight:500; margin-left:6px;}
+  .block-head .meta{color:var(--muted); font-size:11.5px;}
+  table{width:100%; border-collapse:collapse; font-size:12.5px;}
+  th,td{padding:6px 10px; text-align:right; border-bottom:1px solid #f0f1f3;}
+  th:first-child, td:first-child{text-align:left;}
+  th{color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.03em;}
+  td.label{font-family:var(--mono); font-size:12px; white-space:nowrap;}
+  td.range{color:var(--muted); font-family:var(--mono); font-size:11.5px; white-space:nowrap;}
+  td.val{font-family:var(--mono); border-radius:4px;}
+  td.val.out{background:var(--green); color:#03330f; font-weight:700;}
+  td.val.nomatch{color:var(--muted); font-style:italic; background:transparent;}
+  td.val .corrected{display:block; font-weight:500; font-size:10.5px; opacity:.75; margin-top:1px;}
+  tr.nomatch-row td{color:var(--muted); font-style:italic; background:#fafafa;}
+  tr.title-row td{font-weight:700; font-size:13px; background:#f8fafc; color:var(--text); padding-top:10px; padding-bottom:8px; border-bottom:1px solid var(--border);}
+  .remove-x{cursor:pointer; color:var(--muted); font-size:16px; line-height:1; border:none; background:none; padding:0 4px;}
+  .remove-x:hover{color:var(--red);}
+  #output{width:100%; min-height:140px; font-family:var(--mono); font-size:12px; padding:10px;
+    border:1px solid var(--border); border-radius:8px; background:#fafbfc; color:var(--text);}
+  .empty{color:var(--muted); font-size:13px; padding:14px 4px;}
+  .legend{display:flex; gap:16px; margin-top:10px; font-size:12px; color:var(--muted); flex-wrap:wrap;}
+  .legend span{display:inline-flex; align-items:center; gap:6px;}
+  .swatch{width:12px; height:12px; border-radius:3px; display:inline-block;}
+  .swatch.out{background:var(--green);}
+  .swatch.nomatch{background:#e5e7eb;}
+</style>
+</head>
+<body>
+
+<h1>Spec Validator</h1>
+<p class="sub">v3.2 - reads two formats: the Excel check-sheet layout and the compact CSV layout (heading line + bare 5-value rows). Paste measurement rows below — same shape as what you paste into Excel's data sheet. Template tolerances are built into this page, no Excel file needed.</p>
+
+<div id="jsError" style="display:none; background:#fef2f2; color:#991b1b; border:1px solid #fecaca; padding:10px 14px; border-radius:8px; margin-bottom:16px; font-family:monospace; font-size:12px; white-space:pre-wrap;"></div>
+
+<div class="panel">
+  <h2>1. Paste data</h2>
+  <textarea id="pasteBox" placeholder="Paste the rows here, e.g.&#10;MX5 LHD Aspheric mirror&#10;① F 242.85 (+0.15/-0.15)&#9;CMM(비접촉)&#9;초.중.종&#9;242.737&#9;242.745&#9;242.769&#9;242.743&#9;242.728&#10;② ..."></textarea>
+  <div class="row">
+    <button id="addBtn">Add data</button>
+    <button id="removeLastBtn" class="secondary">Remove last add</button>
+    <button id="clearAllBtn" class="secondary">Clear all</button>
+    <span class="hint">Paste one or many blocks at once — codes and sides are picked out automatically. Nothing here is sent anywhere; it all stays in this browser tab.</span>
+  </div>
+  <div id="addMsg" class="hint" style="color:var(--red);"></div>
+  <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--border);">
+    <div class="hint" style="margin-bottom:8px;">Or upload the Excel file (or a .csv in the "1. CODE SIDE,date,..." layout) directly — reads the real cells, so wrapped notes and merged-cell headers can't confuse it the way pasted text sometimes can.</div>
+    <div class="row" style="margin-top:0;">
+      <input type="file" id="xlsxInput" accept=".xlsx,.xls,.xlsm,.csv" style="font-size:12.5px;">
+    </div>
+    <div id="xlsxMsg" class="hint" style="color:var(--red);"></div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>2. Results</h2>
+  <div id="summary">Nothing added yet.</div>
+  <div class="legend">
+    <span><span class="swatch out"></span>outside Template tolerance (small "→ …" number is the mold-compensation suggestion)</span>
+    <span><span class="swatch nomatch"></span>no matching Template spec found (not checked)</span>
+  </div>
+  <div id="results" style="margin-top:14px;"></div>
+</div>
+
+<div class="panel">
+  <h2>3. Copy back into Excel — flagged &amp; corrected, side by side</h2>
+  <p class="hint" style="margin-top:0;">Left block is the real measured data, unaltered. Right block is the same rows with every out-of-tolerance value's 2nd decimal digit forced to 6 (your team's mold-compensation convention) — a suggested correction, not a real reading, sent alongside the real data so the engineers can see both. Select all, copy, and paste directly into Excel.</p>
+  <textarea id="output" readonly style="min-height:200px;"></textarea>
+  <div class="row">
+    <button id="copyBtn" class="secondary">Copy to clipboard</button>
+    <span id="copyMsg" class="hint"></span>
+    <button id="saveCsvBtn" class="secondary">Save as CSV</button>
+    <span id="saveMsg" class="hint"></span>
+  </div>
+</div>
+
+<!-- SheetJS (xlsx.js) - reads .xlsx/.xls/.xlsm files client-side. Loaded from
+     cdnjs, so the "Upload Excel file" option needs internet access the
+     first time the page opens; the paste-based flow above never needs it. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script>
+// Registered in its own tiny script tag, separate from the main logic below,
+// so that even a parse-time error in that bigger block still gets caught and
+// shown on the page - instead of every button silently doing nothing with no
+// clue why.
+window.onerror = function(msg, url, line, col){
+  var el = document.getElementById('jsError');
+  if(el){
+    el.style.display = 'block';
+    el.textContent = 'Something went wrong running this page\'s script (line ' + line + '): ' + msg +
+      '\n\nOpen this file in a recent Chrome or Edge and check the Console (F12) for more detail, or send this message back.';
+  }
+  return false;
+};
+</script>
+<script>
+const TEMPLATE = [{"code":"MX5","side":"","pos":"E7","nominal":238.85,"up":0.37,"lo":-0.37},{"code":"MX5","side":"","pos":"B16","nominal":82.05,"up":0.15,"lo":-0.15},{"code":"MX5","side":"","pos":"B3","nominal":83.61,"up":0.0,"lo":-0.5},{"code":"MX5","side":"","pos":"B3","nominal":83.61,"up":0.0,"lo":-0.5},{"code":"MX5","side":"","pos":"B4","nominal":83.61,"up":0.0,"lo":-0.5},{"code":"NQ5","side":"LHD","pos":"B3","nominal":71.77,"up":0.0,"lo":-0.5},{"code":"NQ5","side":"LHD","pos":"B3","nominal":71.33,"up":0.0,"lo":-0.5},{"code":"NQ5","side":"LHD","pos":"B2","nominal":70.09,"up":0.0,"lo":-0.5},{"code":"NQ5","side":"LHD","pos":"H7","nominal":241.76,"up":0.1,"lo":-0.1},{"code":"NQ5","side":"LHD","pos":"F7","nominal":242.85,"up":0.1,"lo":-0.1},{"code":"NQ5","side":"LHD","pos":"B16","nominal":70.06,"up":0.1,"lo":-0.1},{"code":"GN7","side":"","pos":"F7","nominal":239.35,"up":0.37,"lo":-0.37},{"code":"GN7","side":"","pos":"B6","nominal":76.62,"up":0.14,"lo":-0.14},{"code":"GN7","side":"","pos":"B3","nominal":77.24,"up":0.0,"lo":-0.5},{"code":"GN7","side":"","pos":"B3","nominal":77.24,"up":0.0,"lo":-0.5},{"code":"GN7","side":"","pos":"B4","nominal":77.24,"up":0.0,"lo":-0.5},{"code":"LX3","side":"LHD","pos":"C4","nominal":86.95,"up":0.0,"lo":-0.5},{"code":"LX3","side":"LHD","pos":"C3","nominal":87.09,"up":0.0,"lo":-0.5},{"code":"LX3","side":"LHD","pos":"C3","nominal":87.0,"up":0.0,"lo":-0.5},{"code":"LX3","side":"LHD","pos":"H7","nominal":237.75,"up":0.1,"lo":-0.1},{"code":"LX3","side":"LHD","pos":"F6","nominal":235.85,"up":0.1,"lo":-0.1},{"code":"LX3","side":"LHD","pos":"B16","nominal":84.47,"up":0.1,"lo":-0.1},{"code":"DN8","side":"LHD","pos":"F7","nominal":227.85,"up":0.37,"lo":-0.37},{"code":"DN8","side":"LHD","pos":"B15","nominal":75.12,"up":0.14,"lo":-0.14},{"code":"DN8","side":"LHD","pos":"B3","nominal":76.23,"up":0.0,"lo":-0.5},{"code":"DN8","side":"LHD","pos":"B3","nominal":76.54,"up":0.0,"lo":-0.5},{"code":"DN8","side":"LHD","pos":"B4","nominal":76.6,"up":0.0,"lo":-0.5},{"code":"SP3","side":"LHD","pos":"C3","nominal":86.12,"up":0.0,"lo":-0.5},{"code":"SP3","side":"LHD","pos":"C3","nominal":85.73,"up":0.0,"lo":-0.5},{"code":"SP3","side":"LHD","pos":"C2","nominal":85.84,"up":0.0,"lo":-0.5},{"code":"SP3","side":"LHD","pos":"H7","nominal":242.26,"up":0.15,"lo":-0.15},{"code":"SP3","side":"LHD","pos":"F7","nominal":242.35,"up":0.15,"lo":-0.15},{"code":"SP3","side":"LHD","pos":"C16","nominal":84.91,"up":0.1,"lo":-0.1},{"code":"CT","side":"LHD","pos":"C4","nominal":75.03,"up":0.0,"lo":-0.5},{"code":"CT","side":"LHD","pos":"C3","nominal":75.47,"up":0.0,"lo":-0.5},{"code":"CT","side":"LHD","pos":"C3","nominal":75.9,"up":0.0,"lo":-0.5},{"code":"CT","side":"LHD","pos":"H7","nominal":247.75,"up":0.1,"lo":-0.1},{"code":"CT","side":"LHD","pos":"E7","nominal":247.85,"up":0.1,"lo":-0.1},{"code":"CT","side":"LHD","pos":"B16","nominal":74.61,"up":0.1,"lo":-0.1},{"code":"JW","side":"LHD","pos":"C3","nominal":82.51,"up":0.0,"lo":-0.5},{"code":"JW","side":"LHD","pos":"C3","nominal":82.44,"up":0.0,"lo":-0.5},{"code":"JW","side":"LHD","pos":"C2","nominal":82.53,"up":0.0,"lo":-0.5},{"code":"JW","side":"LHD","pos":"F7","nominal":240.76,"up":0.1,"lo":-0.1},{"code":"JW","side":"LHD","pos":"E7","nominal":240.85,"up":0.1,"lo":-0.1},{"code":"JW","side":"LHD","pos":"C16","nominal":82.75,"up":0.1,"lo":-0.1},{"code":"MV","side":"LHD","pos":"E7","nominal":231.85,"up":0.37,"lo":-0.37},{"code":"MV","side":"LHD","pos":"B7","nominal":75.39,"up":0.14,"lo":-0.14},{"code":"MV","side":"LHD","pos":"B3","nominal":79.75,"up":0.0,"lo":-0.5},{"code":"MV","side":"LHD","pos":"B3","nominal":80.44,"up":0.0,"lo":-0.5},{"code":"MV","side":"LHD","pos":"B3","nominal":80.4,"up":0.0,"lo":-0.5},{"code":"CE","side":"LHD","pos":"C3","nominal":73.91,"up":0.0,"lo":-0.5},{"code":"CE","side":"LHD","pos":"C3","nominal":73.63,"up":0.0,"lo":-0.5},{"code":"CE","side":"LHD","pos":"C2","nominal":73.47,"up":0.0,"lo":-0.5},{"code":"CE","side":"LHD","pos":"H7","nominal":229.06,"up":0.1,"lo":-0.1},{"code":"CE","side":"LHD","pos":"F7","nominal":229.15,"up":0.1,"lo":-0.1},{"code":"CE","side":"LHD","pos":"C16","nominal":73.74,"up":0.1,"lo":-0.1},{"code":"DL3 PE","side":"LHD","pos":"F7","nominal":231.85,"up":0.37,"lo":-0.37},{"code":"DL3 PE","side":"LHD","pos":"B9","nominal":76.19,"up":0.14,"lo":-0.14},{"code":"DL3 PE","side":"LHD","pos":"C3","nominal":76.56,"up":0.0,"lo":-0.5},{"code":"DL3 PE","side":"LHD","pos":"C3","nominal":76.5,"up":0.0,"lo":-0.5},{"code":"DL3 PE","side":"LHD","pos":"C4","nominal":76.43,"up":0.0,"lo":-0.5},{"code":"DL3","side":"","pos":"","nominal":177.4,"up":0.3,"lo":-0.3},{"code":"DL3","side":"","pos":"","nominal":66.11,"up":0.12,"lo":-0.12},{"code":"DL3","side":"","pos":"","nominal":68.63,"up":0.0,"lo":-0.5},{"code":"DL3","side":"","pos":"","nominal":68.63,"up":0.0,"lo":-0.5},{"code":"DL3","side":"","pos":"","nominal":68.63,"up":0.0,"lo":-0.5}];
+const NOMINAL_TOL = 0.005;
+const KNOWN_CODES = [...new Set(TEMPLATE.map(t => t.code))];
+
+function trm(s){ return (s == null ? "" : String(s)).trim(); }
+
+function codeMatches(tplCode, dataCode){
+  const a = trm(tplCode).toUpperCase(), b = trm(dataCode).toUpperCase();
+  if(!a || !b) return false;
+  return b.includes(a) || a.includes(b);
+}
+function parseCodeSide(desc){
+  const d = trm(desc);
+  let side = "";
+  if(/LHD/i.test(d)) side = "LHD";
+  else if(/RHD/i.test(d)) side = "RHD";
+  const sp = d.indexOf(" ");
+  const code = sp > 0 ? d.slice(0, sp) : d;
+  return { code: trm(code), side };
+}
+function extractNominal(label){
+  const m = /(\d+\.?\d*)\s*\(/.exec(label);
+  if(!m) return null;
+  const n = parseFloat(m[1]);
+  return isNaN(n) ? null : n;
+}
+// Side (LHD/RHD) is deliberately NOT part of the match: every code that has
+// ever carried both sides in this Template (MX5) turned out to use identical
+// nominal/tolerance values on both sides, and NOMINAL_TOL below already does
+// the real disambiguation by number. Filtering on side too just meant a
+// code's RHD (or LHD) shipment would silently report "no match" the first
+// time it showed up, even though its numbers were fine — that's what
+// happened with NQ5PE RHD and SP3 RHD before this was removed. If a future
+// part genuinely needs different specs per side, give it two distinct
+// nominal values (or wide-enough tolerances) that don't collide within
+// NOMINAL_TOL, rather than re-adding a side check here.
+function findSpec(code, nominal){
+  let best = null, bestDiff = Infinity;
+  for(const item of TEMPLATE){
+    if(codeMatches(item.code, code)){
+      const diff = Math.abs(item.nominal - nominal);
+      if(diff <= NOMINAL_TOL && diff < bestDiff){ bestDiff = diff; best = item; }
+    }
+  }
+  return best;
+}
+// Fixed-vocabulary column headers / filler text that shows up on non-dimension
+// rows (Quantity, cavity/position headers, block index numbers, etc.) - never
+// treated as a product description, however the paste happens to be aligned.
+const FILLER_EXACT = new Set([
+  "quantity","검사규격","검사구","검사주기","초품","중품","종품","초.중.종",
+  "1cavity","2cavity","설비","검사자","납품수량","lot번호",
+  "vernier","verniercalipers","verniercaliper","cmm","cmm(비접촉)",
+  "cmm(non-contacting)","cmm(non-contact)","cmm(비접촉식)"
+]);
+function isFillerField(f){
+  const raw = trm(f);
+  if(!raw) return true;
+  const key = raw.toLowerCase().replace(/\s+/g, '');
+  if(FILLER_EXACT.has(key)) return true;
+  if(/^n\d+$/i.test(key)) return true;                 // n1, n2, ...
+  if(/^\[?\s*\d+\s*\]?\s*호기$/.test(raw)) return true;  // "[ 3 ]호기"
+  if(/^\d+$/.test(raw)) return true;                     // bare block-index number
+  // A stray punctuation/quote-mark leftover from a merged cell (e.g. a lone
+  // " ditto mark) has no real letters/digits in it at all - never a product
+  // code, so it must not be able to start a new (bogus) block on its own.
+  const alnum = raw.replace(/[^A-Za-z0-9가-힣]/g, '');
+  if(alnum.length < 2) return true;
+  return false;
+}
+// An unrecognized field only counts as a plausible NEW product code if it
+// is actually written like one - every Template code is in caps (MX5, NQ5,
+// LX3, CT, GN7, ...). An ordinary description word such as "Aspheric" or
+// "mirror" - typically the tail end of a product description that landed
+// on its own line (a wrapped cell, a two-row description, etc.) - is mixed
+// case and must NOT be allowed to open a bogus new block, which both
+// splits the real block it belongs to and shows up as its own empty/junk
+// entry. A code we DO recognize is always plausible, whatever its case,
+// since codeMatches already compares case-insensitively.
+function isPlausibleCode(code, recognized){
+  if(recognized) return true;
+  const letters = code.replace(/[^A-Za-z]/g, '');
+  if(!letters) return false;
+  return letters === letters.toUpperCase();
+}
+// Finds the product-description field on a non-dimension line, if any, and
+// reports whether its code is one this page actually has Template specs for.
+// A line whose code we DON'T recognize still counts as a header - it must
+// start a new group instead of being silently ignored, otherwise its rows
+// would wrongly inherit whatever product came before it in the paste - but
+// only once it also passes isPlausibleCode above.
+function looksLikeHeaderLine(line){
+  const t = trm(line);
+  if(!t) return null;
+  if(extractNominal(t) !== null) return null; // it's a dimension row, not a header
+  const fields = t.split('\t').map(trm).filter(f => f.length > 0);
+  for(const f of fields){
+    if(isFillerField(f)) continue;
+    const { code, side } = parseCodeSide(f);
+    if(!code) continue;
+    const recognized = KNOWN_CODES.some(kc => codeMatches(kc, code));
+    if(!isPlausibleCode(code, recognized)) continue;
+    return { code, side, raw: t, recognized };
+  }
+  return null;
+}
+function extractFiveValues(line){
+  const fields = line.split('\t').map(f => f.trim());
+  let labelIdx = -1;
+  for(let i = 0; i < fields.length; i++){
+    if(/\d+\.?\d*\s*\(/.test(fields[i])){ labelIdx = i; break; }
+  }
+  const vals = [];
+  const rawVals = [];
+  const start = labelIdx >= 0 ? labelIdx + 1 : 0;
+  for(let i = start; i < fields.length && vals.length < 5; i++){
+    const f = fields[i];
+    if(/^-?\d+(\.\d+)?$/.test(f)){ vals.push(parseFloat(f)); rawVals.push(f); }
+  }
+  return { vals, rawVals };
+}
+function extractLabel(line){
+  const fields = line.split('\t').map(f => f.trim());
+  for(const f of fields){
+    if(/\d+\.?\d*\s*\(/.test(f)) return f;
+  }
+  return trm(line);
+}
+
+// Excel's tab-separated clipboard export wraps a cell in double quotes when
+// that cell's own content has an embedded newline (e.g. an equipment note
+// that got manually line-wrapped, like "Vernier calipers" sitting on its
+// own line inside one cell) - the quotes mark that the newline belongs to
+// that one cell, not a new row. Splitting the paste on \n before knowing
+// this tears a real row in two: the label ends up alone on one "line" with
+// none of its own values, and the values end up on a separate "line" that
+// starts with a stray quote and gets misread as a new product header -
+// which both breaks the row's values off it and splits one continuous
+// product into bogus separate groups. Reassembling logical rows first,
+// respecting quotes, fixes both at the source.
+function splitLogicalLines(text){
+  const lines = [];
+  let row = '';
+  let atFieldStart = true;
+  let inQuotes = false;
+  let i = 0;
+  const n = text.length;
+  while(i < n){
+    const c = text[i];
+    if(inQuotes){
+      if(c === '"'){
+        if(text[i + 1] === '"'){ row += '"'; i += 2; continue; }
+        inQuotes = false; atFieldStart = false; i++; continue;
+      }
+      // fold an embedded newline/tab inside the quoted cell to a space so
+      // it can't masquerade as a row or field break, keeping the rest of
+      // the cell's text intact
+      row += (c === '\n' || c === '\r' || c === '\t') ? ' ' : c;
+      i++; continue;
+    }
+    if(c === '"' && atFieldStart){ inQuotes = true; atFieldStart = false; i++; continue; }
+    if(c === '\t'){ row += '\t'; atFieldStart = true; i++; continue; }
+    if(c === '\r'){ i++; continue; }
+    if(c === '\n'){ lines.push(row); row = ''; atFieldStart = true; i++; continue; }
+    row += c; atFieldStart = false; i++;
+  }
+  lines.push(row);
+  return lines;
+}
+
+// Each data block now opens with an info line like
+//   1  Continental  품 번  A3C1056010000  검 사 일  2026년 08월 13일( 주간□ , 야간■ )
+// This returns the inspection date from such a line as "YYYYMMDD", or null
+// if the line isn't one. The whole line is then skipped as a header
+// candidate - otherwise its part number (A3C1056010000 - all caps, so it
+// looks like a product code) would open a bogus empty block.
+function extractInspectionDate(line){
+  const compact = line.replace(/\s+/g, '');
+  if(compact.indexOf('검사일') === -1) return null;
+  const after = compact.slice(compact.indexOf('검사일') + 3);
+  let m = /(\d{4})년(\d{1,2})월(\d{1,2})일/.exec(after) ||
+          /(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})/.exec(after) ||
+          /(\d{4})년(\d{1,2})월(\d{1,2})일/.exec(compact) ||
+          /(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})/.exec(compact);
+  if(m) return m[1] + m[2].padStart(2, '0') + m[3].padStart(2, '0');
+  m = /(20\d{6})/.exec(after);
+  if(m) return m[1];
+  return ''; // it IS the info line, just no readable date on it
+}
+
+function parseBlocks(text){
+  const lines = splitLogicalLines(text);
+  const blocks = [];
+  let current = null;
+  const unmatchedRows = [];
+  let pendingDate = null; // date read from an info line, waiting for its block's code line
+
+  for(const rawLine of lines){
+    if(!trm(rawLine)) continue;
+    const inspDate = extractInspectionDate(rawLine);
+    if(inspDate !== null){
+      pendingDate = inspDate;
+      continue;
+    }
+    const nominal = extractNominal(rawLine);
+    if(nominal !== null){
+      const { vals: values, rawVals: rawValues } = extractFiveValues(rawLine);
+      const label = extractLabel(rawLine);
+      const row = { label, nominal, values, rawValues, raw: rawLine };
+      if(current) current.rows.push(row);
+      else unmatchedRows.push(row);
+      continue;
+    }
+    const hdr = looksLikeHeaderLine(rawLine);
+    if(hdr){
+      // A fresh date line also starts a new block even when the code repeats
+      // (e.g. two GN7 sheets from different inspection days pasted together).
+      const newDate = pendingDate !== null && (!current || pendingDate !== current.date);
+      if(!current || current.code !== hdr.code || current.side !== hdr.side || newDate){
+        current = { code: hdr.code, side: hdr.side, date: pendingDate || '', headerRaw: hdr.raw, recognized: hdr.recognized, rows: [] };
+        blocks.push(current);
+      }
+      pendingDate = null;
+      continue;
+    }
+    // otherwise: Quantity line, column-header row, blank filler — ignored
+  }
+  return { blocks, unmatchedRows };
+}
+
+// ---- Format 2: compact CSV (e.g. the 1002 file) -------------------------
+// Block shape:
+//   1. LX3 LHD,20261002,20260922,780,        <- heading, kept exactly as is
+//   235.783,235.785,235.772,235.771,235.765  <- data rows: 5 bare numbers,
+//   ...                                         NO "<nominal> (<tol>)" label
+// Because the rows carry no label, which Template spec a row belongs to is
+// decided from the check-sheet layout: CMM rows first, then the Vernier
+// rows, in the same ① ② ③ ... order the Excel sheets use. SHEET_LAYOUT
+// records that order (as nominals) for the parts seen so far; the vernier
+// order differs per part and even per side (NQ5 LHD vs RHD run in opposite
+// directions), so it can't be derived from the Template itself. A part not
+// listed here falls back to "closest value" matching - still flagged on
+// screen so a wrong guess is visible.
+const SHEET_LAYOUT = {
+  "LX3":     { cmm:[235.85,237.75,84.47],  vern:[87,87.09,86.95] },
+  "NQ5|LHD": { cmm:[242.85,241.76,70.06],  vern:[70.09,71.33,71.77] },
+  "NQ5|RHD": { cmm:[242.85,241.76,70.06],  vern:[71.77,71.33,70.09] },
+  "SP3":     { cmm:[242.35,242.26,84.91],  vern:[85.84,85.73,86.12] },
+  "MX5":     { cmm:[238.85,82.05],         vern:[83.61,83.61,83.61] },
+  "GN7":     { cmm:[239.35,76.62],         vern:[77.24,77.24,77.24] },
+  "DN8":     { cmm:[227.85,75.12],         vern:[76.23,76.54,76.6] }
+};
+function parseCsvLine(line){
+  const out = [];
+  let cur = '', inQ = false;
+  for(let i = 0; i < line.length; i++){
+    const c = line[i];
+    if(inQ){
+      if(c === '"'){ if(line[i+1] === '"'){ cur += '"'; i++; } else inQ = false; }
+      else cur += c;
+    }else if(c === '"' && cur === ''){ inQ = true; }
+    else if(c === ','){ out.push(cur.trim()); cur = ''; }
+    else cur += c;
+  }
+  out.push(cur.trim());
+  return out;
+}
+const CSV_HEADING_RE = /^\s*\d+\s*\.\s+\S/;   // "1. LX3 LHD" - space after the dot, so "235.783" can't match
+function looksLikeCsvFormat(text){
+  if(text.indexOf('\t') !== -1) return false;
+  return text.split(/\r?\n/).some(l => CSV_HEADING_RE.test(parseCsvLine(l)[0]) && l.indexOf(',') !== -1);
+}
+function canonicalCode(code){
+  const up = trm(code).toUpperCase();
+  return KNOWN_CODES.find(k => k.toUpperCase() === up) ||
+         KNOWN_CODES.find(k => codeMatches(k, code)) || null;
+}
+// every ordering of arr (n is tiny: 2-3 per group)
+function permutations(arr){
+  if(arr.length <= 1) return [arr.slice()];
+  const out = [];
+  arr.forEach((x, i) => {
+    permutations(arr.slice(0, i).concat(arr.slice(i + 1))).forEach(p => out.push([x].concat(p)));
+  });
+  return out;
+}
+// Assign specs (Template entries) to rows by closest value: tries every
+// pairing and keeps the one with the smallest total distance between each
+// row's mean and its spec's acceptance-window centre.
+function assignByValue(rowMeans, specs){
+  let best = null, bestCost = Infinity;
+  for(const perm of permutations(specs)){
+    let cost = 0;
+    perm.forEach((sp, i) => { cost += Math.abs(rowMeans[i] - (sp.nominal + (sp.up + sp.lo) / 2)); });
+    if(cost < bestCost){ bestCost = cost; best = perm; }
+  }
+  return best.map(sp => sp.nominal);
+}
+function mean(a){ return a.reduce((x, y) => x + y, 0) / a.length; }
+
+// Works out {nominal, equip} for every data row of one CSV block. Returns
+// the plan plus a human-readable note when it had to guess.
+function planCsvRows(code, side, rows){
+  const canon = canonicalCode(code);
+  const plan = rows.map(() => ({ nominal: NaN, equip: null }));
+  if(!canon) return { plan, note: `no Template specs for "${code}" - rows not checked` };
+  const specs = TEMPLATE.filter(t => t.code === canon);
+  const cmmSpecs = specs.filter(t => t.up > 0);
+  const vernSpecs = specs.filter(t => t.up === 0);
+  const layout = SHEET_LAYOUT[canon + '|' + side] || SHEET_LAYOUT[canon];
+  const means = rows.map(r => r.values.length ? mean(r.values) : NaN);
+
+  if(layout && layout.cmm.length + layout.vern.length === rows.length){
+    layout.cmm.forEach((n, i) => plan[i] = { nominal: n, equip: 'cmm' });
+    layout.vern.forEach((n, i) => plan[layout.cmm.length + i] = { nominal: n, equip: 'vernier' });
+    return { plan, note: '' };
+  }
+  const nC = cmmSpecs.length, nV = vernSpecs.length;
+  if(nC + nV === rows.length && means.every(m => !isNaN(m))){
+    const cn = assignByValue(means.slice(0, nC), cmmSpecs);
+    const vn = assignByValue(means.slice(nC), vernSpecs);
+    cn.forEach((n, i) => plan[i] = { nominal: n, equip: 'cmm' });
+    vn.forEach((n, i) => plan[nC + i] = { nominal: n, equip: 'vernier' });
+    return { plan, note: `${canon} ${side}`.trim() + ': sheet layout not on file - rows matched to the closest Template value' };
+  }
+  // row count doesn't fit the Template at all: nearest nominal, per row
+  rows.forEach((r, i) => {
+    if(isNaN(means[i])) return;
+    let bestSp = null, bd = Infinity;
+    for(const sp of specs){ const d = Math.abs(means[i] - sp.nominal); if(d < bd){ bd = d; bestSp = sp; } }
+    if(bestSp) plan[i] = { nominal: bestSp.nominal, equip: bestSp.up > 0 ? 'cmm' : 'vernier' };
+  });
+  return { plan, note: `${canon} ${side}`.trim() + `: ${rows.length} rows but Template has ${nC + nV} - matched each row to the closest Template value` };
+}
+
+function parseCsvBlocks(text){
+  const blocks = [];
+  const notes = [];
+  let current = null;
+  for(const rawLine of text.replace(/^﻿/, '').split(/\r?\n/)){
+    if(!trm(rawLine)) continue;
+    const f = parseCsvLine(rawLine);
+    if(CSV_HEADING_RE.test(f[0])){
+      const title = f[0];
+      const desc = title.replace(/^\s*\d+\s*\.\s*/, '');
+      let side = '';
+      if(/LHD/i.test(desc)) side = 'LHD'; else if(/RHD/i.test(desc)) side = 'RHD';
+      const code = trm(desc.replace(/[-\s]*[LR]HD/ig, ' ').replace(/\s+/g, ' '));
+      const headingFields = f.slice(0, 5);
+      while(headingFields.length < 5) headingFields.push('');
+      current = { code, side, date: '', headerRaw: rawLine, recognized: !!canonicalCode(code),
+                  headingFields, rows: [] };
+      blocks.push(current);
+      continue;
+    }
+    if(!current) continue;
+    const rawValues = [];
+    for(const x of f){
+      if(rawValues.length >= 5) break;
+      if(/^-?\d+(\.\d+)?$/.test(x)) rawValues.push(x);
+    }
+    if(!rawValues.length) continue;
+    current.rows.push({ label: '', nominal: NaN, values: rawValues.map(parseFloat), rawValues, raw: rawLine });
+  }
+  for(const b of blocks){
+    const { plan, note } = planCsvRows(b.code, b.side, b.rows);
+    if(note) notes.push(note);
+    b.rows.forEach((r, i) => {
+      r.nominal = plan[i].nominal;
+      r.label = isNaN(r.nominal) ? '' : String(r.nominal);
+      // same precision rule as the Excel path: CMM 3 decimals, Vernier 2
+      if(plan[i].equip){
+        r.values = r.values.map(v => parseFloat(formatCellNumber(v, plan[i].equip)));
+        r.rawValues = r.values.map(v => formatCellNumber(v, plan[i].equip));
+      }
+    });
+  }
+  return { blocks, unmatchedRows: [], notes };
+}
+
+function validateRow(code, side, row){
+  const spec = findSpec(code, row.nominal); // side no longer used for matching — kept as a param since callers still pass it for potential display/logging use
+  if(!spec) return { spec: null, results: row.values.map(v => ({ v, status: 'nomatch' })) };
+  const lo = spec.nominal + spec.lo, hi = spec.nominal + spec.up;
+  const results = row.values.map(v => ({ v, status: (v < lo || v > hi) ? 'out' : 'ok' }));
+  return { spec, lo, hi, results };
+}
+
+// Your team's empirical mold-compensation convention: for a sample that
+// measured out of tolerance, force the 2nd digit after the decimal point
+// to 6, whatever digit was actually measured there - not a recomputation
+// of the real reading, just the known correction you send the mold shop
+// alongside it. Applied here to any out-of-tolerance value regardless of
+// whether it read high or low; say the word if you only want it applied
+// to undersized (below-tolerance) readings.
+function toolingCorrectedValue(rawStr){
+  const s = trm(rawStr);
+  const dot = s.indexOf('.');
+  if(dot === -1) return s + '.06'; // no decimal in the source - shouldn't normally occur here
+  const intPart = s.slice(0, dot);
+  let decPart = s.slice(dot + 1);
+  while(decPart.length < 2) decPart += '0';
+  decPart = decPart.slice(0, 1) + '6' + decPart.slice(2);
+  return intPart + '.' + decPart;
+}
+
+// ---- persistent state (in-memory only, for this browser tab) ----
+let state = { entries: [] }; // each entry: {id, blocks, unmatchedRows}
+let nextId = 1;
+let lastCompactRows = []; // array of line-arrays, kept in sync with #output, used by Save as CSV
+
+// Everything renders as one flat, ungrouped list - no per-product header
+// lines or block dividers, in either the on-page table or the copy/CSV
+// output. Blocks/entries are still tracked internally (needed to look up
+// the right Template spec per row), just never shown as a grouping.
+function render(){
+  const resultsEl = document.getElementById('results');
+  const summaryEl = document.getElementById('summary');
+  const outputEl = document.getElementById('output');
+
+  if(state.entries.length === 0){
+    resultsEl.innerHTML = '<div class="empty">No data added yet — paste rows above and click "Add data".</div>';
+    summaryEl.textContent = 'Nothing added yet.';
+    summaryEl.classList.remove('hasOut');
+    outputEl.value = '';
+    lastCompactRows = [];
+    return;
+  }
+
+  let totalRows = 0, totalOut = 0, totalNoMatch = 0;
+  const compactRows = []; // array of arrays of raw value strings — one per output line
+  const correctedCompactRows = []; // same, with out-of-tolerance values corrected
+  let tableHtml = '<table><tbody>';
+
+  function renderRow(v, rawValues){
+    totalRows++;
+    const rowClass = v.spec ? '' : ' class="nomatch-row"';
+    tableHtml += `<tr${rowClass}>`;
+    const correctedRow = [];
+    for(let i = 0; i < 5; i++){
+      const r = v.results[i];
+      if(r === undefined){ tableHtml += `<td class="val"></td>`; continue; }
+      if(r.status === 'out') totalOut++;
+      if(r.status === 'nomatch') totalNoMatch++;
+      const cls = r.status === 'out' ? 'val out' : (r.status === 'nomatch' ? 'val nomatch' : 'val');
+      if(r.status === 'out'){
+        const corrected = toolingCorrectedValue(rawValues[i]);
+        correctedRow.push(corrected);
+        tableHtml += `<td class="${cls}">${r.v}<span class="corrected">→ ${corrected}</span></td>`;
+      }else{
+        correctedRow.push(rawValues[i]);
+        tableHtml += `<td class="${cls}">${r.v}</td>`;
+      }
+    }
+    tableHtml += `</tr>`;
+    compactRows.push(rawValues.slice());
+    correctedCompactRows.push(correctedRow);
+  }
+
+  // Both the on-page table and the copy/CSV output get the same title line
+  // per product ("1. NQ5PE LHD") directly followed by its data - CMM rows
+  // then Vernier rows, back to back, no blank line anywhere - so the table
+  // reads the same way the copy-back text does.
+  // The 검사일 (inspection date) goes two columns over from the title,
+  // e.g. "1. GN7<tab><tab>20260813", on both the real and corrected sides.
+  function pushTitle(text, date){
+    date = date || '';
+    tableHtml += `<tr class="title-row"><td colspan="2">${escapeHtml(text)}</td>` +
+      `<td style="text-align:left;">${escapeHtml(date)}</td><td colspan="2"></td></tr>`;
+    compactRows.push([text, '', date, '', '']);
+    correctedCompactRows.push([text, '', date, '', '']);
+  }
+  // CSV-format blocks keep their heading line exactly as given in the file
+  // ("1. LX3 LHD", 20261002, 20260922, 780) - same text, same numbering.
+  function pushHeadingFields(fields){
+    tableHtml += '<tr class="title-row">' +
+      fields.map(x => `<td style="text-align:left;white-space:nowrap;">${escapeHtml(x)}</td>`).join('') + '</tr>';
+    compactRows.push(fields.slice());
+    correctedCompactRows.push(fields.slice());
+  }
+
+  let blockIdx = 0;
+  for(const entry of state.entries){
+    for(const block of entry.blocks){
+      if(!block.rows.length) continue; // header-only block with no dimension rows - nothing to show
+      blockIdx++;
+      if(block.headingFields) pushHeadingFields(block.headingFields);
+      else pushTitle(`${blockIdx}. ${block.code} ${block.side}`.trim(), block.date);
+      for(const row of block.rows){
+        renderRow(validateRow(block.code, block.side, row), row.rawValues);
+      }
+    }
+    if(entry.unmatchedRows.length){
+      blockIdx++;
+      pushTitle(`${blockIdx}. Unmatched`);
+      for(const row of entry.unmatchedRows){
+        renderRow(validateRow('', '', row), row.rawValues);
+      }
+    }
+  }
+
+  tableHtml += '</tbody></table>';
+
+  resultsEl.innerHTML = tableHtml;
+
+  // compactRows and correctedCompactRows were built in lockstep (one title
+  // or data row pushed to each per iteration), so row i of one always
+  // corresponds to row i of the other - zip them into one wide row: the 5
+  // real values, a blank spacer column, then the 5 corrected values.
+  const sideBySideRows = [
+    ['Input data', '', '', '', '', '', 'corrected data', '', '', '', '']
+  ];
+  for(let i = 0; i < compactRows.length; i++){
+    sideBySideRows.push(compactRows[i].concat(['']).concat(correctedCompactRows[i]));
+  }
+
+  outputEl.value = sideBySideRows.map(r => r.join('\t')).join('\n');
+  lastCompactRows = sideBySideRows;
+
+  let summary = `${totalRows} dimension row${totalRows===1?'':'s'} — `;
+  if(totalOut > 0) summary += `${totalOut} value${totalOut===1?'':'s'} outside Template tolerance`;
+  else summary += `all matched values within tolerance`;
+  if(totalNoMatch > 0) summary += `, ${totalNoMatch} value${totalNoMatch===1?'':'s'} with no Template match (not checked)`;
+  summaryEl.textContent = summary + '.';
+  summaryEl.classList.toggle('hasOut', totalOut > 0);
+}
+
+function escapeHtml(s){
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function removeEntry(id){
+  state.entries = state.entries.filter(e => e.id !== id);
+  render();
+}
+
+// ---- Excel file upload: read real cells instead of pasted text ----
+//
+// Rather than re-implement matching/validation against raw cell grids, this
+// converts each sheet's cells back into the same tab/newline text shape the
+// paste box already handles, then reuses parseBlocks() unchanged. That
+// keeps one tested code path for both inputs, while still getting the
+// accuracy win a real file gives you: no clipboard quoting, no line-wrap
+// ambiguity - a cell is a cell, a row is a row.
+//
+// One thing pasted text can't tell us but a real file can: which equipment
+// measured a row. The 검사구 column (CMM(비접촉) / Vernier calipers) is only
+// written once per group and left blank on the rows below it (a merged
+// cell) - so this tracks the last equipment name seen down each sheet and
+// carries it forward, then rounds that row's numbers to the target
+// precision: 3 decimals for CMM, 2 for Vernier (matching the precision
+// convention used elsewhere for this same inspection data) rather than
+// leaving them at whatever floating-point Excel happened to store.
+function detectEquipment(cellStrings){
+  for(const c of cellStrings){
+    const k = c.toLowerCase();
+    if(k.indexOf('vernier') !== -1) return 'vernier';
+    if(k.indexOf('cmm') !== -1) return 'cmm';
+  }
+  return null;
+}
+function formatCellNumber(num, equipmentType){
+  if(equipmentType === 'vernier') return num.toFixed(2);
+  if(equipmentType === 'cmm') return num.toFixed(3);
+  // Unrecognized equipment column - round to 3dp without inventing false
+  // trailing-zero precision the source didn't have.
+  return String(Math.round(num * 1000) / 1000);
+}
+function sheetRowsToText(rows){
+  let currentEquip = null;
+  const lines = [];
+  for(const row of rows){
+    const strCells = row.map(c => (typeof c === 'string') ? c.replace(/[\r\n]+/g, ' ').trim() : c);
+    const eq = detectEquipment(strCells.filter(c => typeof c === 'string'));
+    if(eq) currentEquip = eq;
+    const lineCells = strCells.map(c => (typeof c === 'number') ? formatCellNumber(c, currentEquip) : c);
+    lines.push(lineCells.join('\t'));
+  }
+  return lines.join('\n');
+}
+function addEntriesFromWorkbook(workbook){
+  let addedRows = 0, addedBlocks = 0;
+  for(const sheetName of workbook.SheetNames){
+    const ws = workbook.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
+    if(!rows.length) continue;
+    const text = sheetRowsToText(rows);
+    const { blocks, unmatchedRows } = parseBlocks(text);
+    const rowCount = blocks.reduce((n, b) => n + b.rows.length, 0) + unmatchedRows.length;
+    if(rowCount === 0) continue;
+    addedRows += rowCount;
+    addedBlocks += blocks.filter(b => b.rows.length).length;
+    state.entries.push({ id: nextId++, blocks, unmatchedRows });
+  }
+  return { addedRows, addedBlocks };
+}
+
+document.getElementById('addBtn').addEventListener('click', () => {
+  const box = document.getElementById('pasteBox');
+  const text = box.value;
+  const msgEl = document.getElementById('addMsg');
+  if(!trm(text)){
+    msgEl.textContent = 'Paste box is empty — nothing to add.';
+    return;
+  }
+  const isCsv = looksLikeCsvFormat(text);
+  const { blocks, unmatchedRows, notes } = isCsv ? parseCsvBlocks(text) : parseBlocks(text);
+  const rowCount = blocks.reduce((n, b) => n + b.rows.length, 0) + unmatchedRows.length;
+  if(rowCount === 0){
+    msgEl.textContent = 'No dimension rows recognized in that paste (nothing matching a "<number> (<tolerance>)" pattern was found) — the text stays in the box above so you can check it. Try pasting again straight from Excel.';
+    return;
+  }
+  msgEl.textContent = (notes && notes.length) ? 'Note: ' + notes.join(' | ') : '';
+  state.entries.push({ id: nextId++, blocks, unmatchedRows });
+  box.value = '';
+  render();
+});
+
+document.getElementById('xlsxInput').addEventListener('change', async (ev) => {
+  const file = ev.target.files && ev.target.files[0];
+  const msgEl = document.getElementById('xlsxMsg');
+  msgEl.textContent = '';
+  if(!file) return;
+  if(/\.csv$/i.test(file.name)){
+    try{
+      const { blocks, unmatchedRows, notes } = parseCsvBlocks(await file.text());
+      const rowCount = blocks.reduce((n, b) => n + b.rows.length, 0);
+      if(rowCount === 0){
+        msgEl.textContent = `No data rows recognized in "${file.name}" (expected headings like "1. LX3 LHD,..." followed by rows of numbers).`;
+      }else{
+        state.entries.push({ id: nextId++, blocks, unmatchedRows });
+        const n = blocks.filter(b => b.rows.length).length;
+        msgEl.textContent = `Added ${rowCount} data row${rowCount===1?'':'s'} across ${n} product${n===1?'':'s'} from "${file.name}".` +
+          (notes.length ? ' Note: ' + notes.join(' | ') : '');
+        render();
+      }
+    }catch(e){
+      msgEl.textContent = `Couldn't read "${file.name}" (${e.message || e}).`;
+    }
+    ev.target.value = '';
+    return;
+  }
+  if(typeof XLSX === 'undefined'){
+    msgEl.textContent = 'The Excel-reading library didn\'t load (this page needs internet access the first time it opens to fetch it). Use the paste box above instead, or reload this page with internet access.';
+    ev.target.value = '';
+    return;
+  }
+  try{
+    const buf = await file.arrayBuffer();
+    const workbook = XLSX.read(buf, { type: 'array' });
+    const { addedRows, addedBlocks } = addEntriesFromWorkbook(workbook);
+    if(addedRows === 0){
+      msgEl.textContent = `No dimension rows recognized in "${file.name}" (nothing matching a "<number> (<tolerance>)" pattern was found in any sheet).`;
+    }else{
+      msgEl.textContent = `Added ${addedRows} dimension row${addedRows===1?'':'s'} across ${addedBlocks} product${addedBlocks===1?'':'s'} from "${file.name}".`;
+      render();
+    }
+  }catch(e){
+    msgEl.textContent = `Couldn't read "${file.name}" (${e.message || e}). Make sure it's a .xlsx/.xls/.xlsm file.`;
+  }
+  ev.target.value = ''; // allow re-uploading the same file name later
+});
+
+document.getElementById('removeLastBtn').addEventListener('click', () => {
+  if(state.entries.length === 0) return;
+  state.entries.pop();
+  render();
+});
+
+document.getElementById('clearAllBtn').addEventListener('click', () => {
+  state.entries = [];
+  render();
+});
+
+async function copyTextarea(elId, msgId){
+  const el = document.getElementById(elId);
+  const msg = document.getElementById(msgId);
+  try{
+    await navigator.clipboard.writeText(el.value);
+    msg.textContent = 'Copied.';
+  }catch(e){
+    el.select();
+    document.execCommand('copy');
+    msg.textContent = 'Copied.';
+  }
+  setTimeout(() => { msg.textContent = ''; }, 2000);
+}
+
+document.getElementById('copyBtn').addEventListener('click', () => copyTextarea('output', 'copyMsg'));
+
+function dateStamp(){
+  const d = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+function csvEscape(f){
+  const s = f == null ? '' : String(f);
+  if(/[",\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+  return s;
+}
+
+function saveCsv(rows, filename, msgId){
+  const msg = document.getElementById(msgId);
+  if(!rows.length){
+    msg.textContent = 'Nothing to save yet — add some data first.';
+    setTimeout(() => { msg.textContent = ''; }, 2500);
+    return;
+  }
+  const csv = rows.map(r => r.map(csvEscape).join(',')).join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  msg.textContent = `Saved as ${filename}.`;
+  setTimeout(() => { msg.textContent = ''; }, 2500);
+}
+
+document.getElementById('saveCsvBtn').addEventListener('click', () => {
+  saveCsv(lastCompactRows, `${dateStamp()}.csv`, 'saveMsg');
+});
+
+render();
+</script>
+</body>
+</html>
