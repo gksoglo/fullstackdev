@@ -376,22 +376,11 @@ function parseBlocks(text){
 //   235.783,235.785,235.772,235.771,235.765  <- data rows: 5 bare numbers,
 //   ...                                         NO "<nominal> (<tol>)" label
 // Because the rows carry no label, which Template spec a row belongs to is
-// decided from the check-sheet layout: CMM rows first, then the Vernier
-// rows, in the same ① ② ③ ... order the Excel sheets use. SHEET_LAYOUT
-// records that order (as nominals) for the parts seen so far; the vernier
-// order differs per part and even per side (NQ5 LHD vs RHD run in opposite
-// directions), so it can't be derived from the Template itself. A part not
-// listed here falls back to "closest value" matching - still flagged on
-// screen so a wrong guess is visible.
-const SHEET_LAYOUT = {
-  "LX3":     { cmm:[235.85,237.75,84.47],  vern:[87,87.09,86.95] },
-  "NQ5|LHD": { cmm:[242.85,241.76,70.06],  vern:[70.09,71.33,71.77] },
-  "NQ5|RHD": { cmm:[242.85,241.76,70.06],  vern:[71.77,71.33,70.09] },
-  "SP3":     { cmm:[242.35,242.26,84.91],  vern:[85.84,85.73,86.12] },
-  "MX5":     { cmm:[238.85,82.05],         vern:[83.61,83.61,83.61] },
-  "GN7":     { cmm:[239.35,76.62],         vern:[77.24,77.24,77.24] },
-  "DN8":     { cmm:[227.85,75.12],         vern:[76.23,76.54,76.6] }
-};
+// worked out from the TEMPLATE itself: the check-sheet convention is CMM rows
+// first, then the Vernier rows, so the first N rows are paired with the
+// code's CMM specs (symmetric +/- tolerance) and the rest with its Vernier
+// specs (0 ~ -0.5). Inside each group a row goes to the Template spec whose
+// acceptance window is closest to the row's average.
 function parseCsvLine(line){
   const out = [];
   let cur = '', inQ = false;
@@ -426,15 +415,21 @@ function permutations(arr){
   });
   return out;
 }
-// Assign specs (Template entries) to rows by closest value: tries every
-// pairing and keeps the one with the smallest total distance between each
-// row's mean and its spec's acceptance-window centre.
-function assignByValue(rowMeans, specs){
-  let best = null, bestCost = Infinity;
+// Assign specs (Template entries) to rows. Tries every pairing and keeps the
+// one with (1) the fewest out-of-tolerance values - when two Template specs
+// have nearly the same nominal, the pairing under which the data actually
+// fits is the one the sheet used - then (2) the smallest total distance
+// between each row's mean and its spec's acceptance-window centre.
+function assignByValue(rowVals, specs){
+  let best = null, bestOut = Infinity, bestDist = Infinity;
   for(const perm of permutations(specs)){
-    let cost = 0;
-    perm.forEach((sp, i) => { cost += Math.abs(rowMeans[i] - (sp.nominal + (sp.up + sp.lo) / 2)); });
-    if(cost < bestCost){ bestCost = cost; best = perm; }
+    let outs = 0, dist = 0;
+    perm.forEach((sp, i) => {
+      const lo = sp.nominal + sp.lo, hi = sp.nominal + sp.up;
+      rowVals[i].forEach(v => { if(v < lo - 1e-9 || v > hi + 1e-9) outs++; });
+      dist += Math.abs(mean(rowVals[i]) - (sp.nominal + (sp.up + sp.lo) / 2));
+    });
+    if(outs < bestOut || (outs === bestOut && dist < bestDist)){ bestOut = outs; bestDist = dist; best = perm; }
   }
   return best.map(sp => sp.nominal);
 }
@@ -449,21 +444,15 @@ function planCsvRows(code, side, rows){
   const specs = TEMPLATE.filter(t => t.code === canon);
   const cmmSpecs = specs.filter(t => t.up > 0);
   const vernSpecs = specs.filter(t => t.up === 0);
-  const layout = SHEET_LAYOUT[canon + '|' + side] || SHEET_LAYOUT[canon];
   const means = rows.map(r => r.values.length ? mean(r.values) : NaN);
 
-  if(layout && layout.cmm.length + layout.vern.length === rows.length){
-    layout.cmm.forEach((n, i) => plan[i] = { nominal: n, equip: 'cmm' });
-    layout.vern.forEach((n, i) => plan[layout.cmm.length + i] = { nominal: n, equip: 'vernier' });
-    return { plan, note: '' };
-  }
   const nC = cmmSpecs.length, nV = vernSpecs.length;
   if(nC + nV === rows.length && means.every(m => !isNaN(m))){
-    const cn = assignByValue(means.slice(0, nC), cmmSpecs);
-    const vn = assignByValue(means.slice(nC), vernSpecs);
+    const cn = assignByValue(rows.slice(0, nC).map(r => r.values), cmmSpecs);
+    const vn = assignByValue(rows.slice(nC).map(r => r.values), vernSpecs);
     cn.forEach((n, i) => plan[i] = { nominal: n, equip: 'cmm' });
     vn.forEach((n, i) => plan[nC + i] = { nominal: n, equip: 'vernier' });
-    return { plan, note: `${canon} ${side}`.trim() + ': sheet layout not on file - rows matched to the closest Template value' };
+    return { plan, note: '' };
   }
   // row count doesn't fit the Template at all: nearest nominal, per row
   rows.forEach((r, i) => {
